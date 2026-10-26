@@ -14,4 +14,5 @@ pub mod catalog;
 pub mod install;
 pub mod instances;
 pub mod launch;
+pub mod schematics;
 pub mod vanilla;

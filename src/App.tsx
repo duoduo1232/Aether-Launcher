@@ -21,6 +21,7 @@ import { AccountsPage } from "./pages/AccountsPage";
 import { InstancesPage } from "./pages/InstancesPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { SchematicsPage } from "./pages/SchematicsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
 function App() {
@@ -76,6 +77,8 @@ function App() {
             <InstancesPage page={page} />
           ) : page.id === "library" ? (
             <LibraryPage page={page} />
+          ) : page.id === "schematics" ? (
+            <SchematicsPage page={page} />
           ) : page.id === "accounts" ? (
             <AccountsPage page={page} />
           ) : (

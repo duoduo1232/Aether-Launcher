@@ -79,6 +79,25 @@ export type { JavaRuntimeInfo } from "./java";
 export { describeLoginStatus, startMicrosoftLogin } from "./accounts";
 export type { MicrosoftLoginStatus } from "./accounts";
 
+// 投影图（.litematic）管理
+export {
+  IMPORT_LIMIT_BYTES,
+  copySchematicToInstance,
+  deleteSchematic,
+  emptySchematicListing,
+  importSchematic,
+  listSchematics,
+  readSchematic,
+} from "./schematics";
+export type {
+  FailedSchematic,
+  SchematicDetail,
+  SchematicListing,
+  SchematicMetadata,
+  SchematicRegion,
+  SchematicSummary,
+} from "./schematics";
+
 // Installed game lifecycle (offline only; no arbitrary executable or paths)
 export {
   activateInstalledInstance,

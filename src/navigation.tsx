@@ -1,5 +1,6 @@
 import {
   Box24Regular,
+  Cube24Regular,
   Home24Filled,
   Library24Regular,
   Person24Regular,
@@ -7,7 +8,13 @@ import {
 } from "@fluentui/react-icons";
 import type { ReactElement } from "react";
 
-export type PageId = "home" | "instances" | "library" | "accounts" | "settings";
+export type PageId =
+  | "home"
+  | "instances"
+  | "library"
+  | "schematics"
+  | "accounts"
+  | "settings";
 
 export type PageDefinition = {
   id: PageId;
@@ -44,6 +51,14 @@ export const mainPages: readonly PageDefinition[] = [
     label: "资源库",
     icon: <Library24Regular />,
     summary: "模组、资源包与它们的下载来源",
+    pendingTitle: "",
+    pendingBody: "",
+  },
+  {
+    id: "schematics",
+    label: "投影图",
+    icon: <Cube24Regular />,
+    summary: "Litematica 投影文件的 3D 预览与跨版本管理",
     pendingTitle: "",
     pendingBody: "",
   },

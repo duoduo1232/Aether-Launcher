@@ -67,6 +67,11 @@ pub fn run() {
             commands::launch::activate_installed_instance,
             commands::launch::start_installed_instance,
             commands::launch::stop_installed_instance,
+            commands::schematics::list_schematics,
+            commands::schematics::read_schematic,
+            commands::schematics::import_schematic,
+            commands::schematics::delete_schematic,
+            commands::schematics::copy_schematic_to_instance,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

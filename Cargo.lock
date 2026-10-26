@@ -50,6 +50,7 @@ dependencies = [
  "aether-launch",
  "aether-manifest",
  "aether-runtime",
+ "aether-schematic",
  "aether-storage",
  "serde",
  "serde_json",
@@ -123,6 +124,15 @@ dependencies = [
 name = "aether-runtime"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "aether-schematic"
+version = "0.1.0"
+dependencies = [
+ "flate2",
  "serde",
  "thiserror 2.0.21",
 ]
