@@ -9,8 +9,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aether_download::transport::{HttpTransport, TransportRequest};
-use aether_download::verify_reader;
+use aether_download::transport::HttpTransport;
+use aether_download::{bmclapi_mirror, fetch_first_available, verify_reader};
 use aether_manifest::catalog::VersionCatalog;
 use aether_manifest::parse_version_manifest;
 use tauri::Manager;
@@ -34,12 +34,11 @@ fn fetch_verified_metadata(
         .find(|item| item.id == version)
         .ok_or_else(|| "version is absent from the official Mojang catalog".to_owned())?;
 
-    let response = transport
-        .get(&TransportRequest {
-            url: selected.url.clone(),
-            range: None,
-            timeout_secs: METADATA_TIMEOUT_SECS,
-        })
+    // 官方地址在前，BMCLAPI 镜像在后：传输层失败才换地址，内容校验失败
+    // 不回退（那是内容身份问题，不是可达性问题）。
+    let mut urls = vec![selected.url.clone()];
+    urls.extend(bmclapi_mirror(&selected.url));
+    let response = fetch_first_available(transport, &urls, METADATA_TIMEOUT_SECS)
         .map_err(|error| format!("cannot retrieve official version JSON: {error}"))?;
     if response
         .content_length

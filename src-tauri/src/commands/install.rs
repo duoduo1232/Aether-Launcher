@@ -11,8 +11,9 @@ use aether_download::assets::build_asset_object_plan;
 use aether_download::transport::http::UreqKernel;
 use aether_download::transport::{HttpTransport, KernelHttpTransport, TransportError};
 use aether_download::{
-    ArtifactResult, ArtifactSource, AttemptError, CancellationToken, DownloadArtifact,
-    DownloadEngine, DownloadError, DownloadPlan, NoopProgress, is_safe_relative_path,
+    ArtifactResult, AttemptError, CancellationToken, DownloadArtifact, DownloadEngine,
+    DownloadError, DownloadPlan, NoopProgress, expand_plan_with_mirrors, is_safe_relative_path,
+    with_mirrors,
 };
 use aether_launch::build_install_plan;
 use aether_manifest::load_resolved_version_manifest;
@@ -35,10 +36,15 @@ fn install_version(
     let client_version = resolved
         .client_jar_version
         .ok_or_else(|| "version JSON has no official client download".to_owned())?;
-    let plan = build_install_plan(&resolved.manifest, &client_version, &current_environment())
-        .map_err(|error| format!("cannot plan installation: {error}"))?;
+    // 官方源在前、BMCLAPI 镜像在后；传输失败后的回退与按源熔断都由引擎处理。
+    let plan = expand_plan_with_mirrors(
+        build_install_plan(&resolved.manifest, &client_version, &current_environment())
+            .map_err(|error| format!("cannot plan installation: {error}"))?,
+    );
 
-    let engine = DownloadEngine::new(transport, game_root);
+    // 复用已验证文件：装第二个共享资源的版本时，磁盘上已有的 assets 与
+    // 库不再重下；文件缺失或校验不符自动回落到常规下载。
+    let engine = DownloadEngine::new(transport, game_root).with_reuse_verified(true);
     let mut total = run_plan(&engine, &plan)?;
 
     if let Some(index) = &resolved.manifest.asset_index {
@@ -53,15 +59,13 @@ fn install_version(
                     .join(format!("{}.json", index.id)),
                 size: index.size,
                 sha1: index.sha1.to_ascii_lowercase(),
-                sources: vec![ArtifactSource {
-                    provider: "mojang".to_owned(),
-                    url: index_url,
-                }],
+                sources: with_mirrors("mojang", &index_url),
             }],
         };
         total += run_plan(&engine, &index_plan)?;
         let objects = build_asset_object_plan(game_root, &index.id, &index.sha1, index.size)
             .map_err(|error| format!("cannot plan asset download: {error}"))?;
+        let objects = expand_plan_with_mirrors(objects);
         total += run_plan(&engine, &objects)?;
     }
     Ok(total)

@@ -3,7 +3,8 @@
 use std::io::Read;
 
 use aether_download::transport::http::{KernelHttpTransport, UreqKernel};
-use aether_download::transport::{HttpTransport, TransportRequest};
+use aether_download::transport::HttpTransport;
+use aether_download::{bmclapi_mirror, fetch_first_available};
 use aether_manifest::catalog::{
     MAX_CATALOG_BYTES, VERSION_CATALOG_URL, VersionCatalog, parse_version_catalog,
 };
@@ -11,13 +12,11 @@ use aether_manifest::catalog::{
 const CATALOG_TIMEOUT_SECONDS: u64 = 12;
 
 /// Fetch a bounded catalog using an injectable transport for offline tests.
+/// 官方端点在前，BMCLAPI 镜像在后：只在传输层失败时换下一个地址。
 pub(super) fn fetch_catalog(transport: &dyn HttpTransport) -> Result<VersionCatalog, String> {
-    let response = transport
-        .get(&TransportRequest {
-            url: VERSION_CATALOG_URL.to_owned(),
-            range: None,
-            timeout_secs: CATALOG_TIMEOUT_SECONDS,
-        })
+    let mut urls = vec![VERSION_CATALOG_URL.to_owned()];
+    urls.extend(bmclapi_mirror(VERSION_CATALOG_URL));
+    let response = fetch_first_available(transport, &urls, CATALOG_TIMEOUT_SECONDS)
         .map_err(|error| format!("cannot retrieve Mojang version catalog: {error}"))?;
 
     let mut bytes = Vec::new();

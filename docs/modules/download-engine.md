@@ -27,6 +27,16 @@
 - **校验失败删除 `.part`。** 留着会让人误以为「快下完了」；坏文件一律丢弃，下次从头来。
 - **rename 之前不碰目标文件。** 目标文件的旧内容在成功前一直有效，覆盖式写入会让一次失败毁掉可用副本。
 
+## 复用已验证文件
+
+安装常常不是第一次发生：同一台机器上装第二个共享资源的版本时，多数 assets 与库文件已经在磁盘上。目标文件已存在且大小、SHA-1 都与计划一致时，引擎完全跳过网络请求，直接把它当作已完成的下载。
+
+- **复用是 opt-in**：`DownloadEngine::with_reuse_verified(true)`。默认关闭，行为与从前一致。
+- 复用前的校验就是 `verify_local_artifact`：流式 SHA-1、大小核对，并拒绝指向游戏目录之外的链接。通过校验即与清单一致，无需重新下载。
+- 文件缺失、大小不符、摘要不符都**静默回落到常规下载路径**，不报错；不符的旧内容由 `.part` 协议在提交阶段原子覆盖。
+- 跳过发生在来源选择与熔断统计之前：不产生 provider 记录，也不计入请求历史。
+- 进度事件照常发出（provider 为 `local`），按字节聚合的 UI 与计划总量保持一致。
+
 ## Range 续传语义
 
 续传只看两件事：`.part` 当前多大，服务端实际回了什么。
@@ -64,6 +74,7 @@
 - **按来源**记熔断状态：连续失败到阈值（默认 3，可配置，`0` 关闭）就把该来源权重压成 `0` 并在本次会话内不优先使用，而不是每个文件都去撞一次。一个源坏了不影响其它源。**待实现确认**：熔断目前只降权、没有冷却期计时，失败计数随引擎实例走，不落盘。
 - **校验不符比超时惩罚更重。** 内容错了比慢更严重，因此计划按更高的权重计入熔断。
 - 失败记录五类信息：来源名、目标相对路径、第几次尝试、状态码（来自传输错误）、失败分类。
+- **镜像已接入（BMCLAPI）**：`aether_download::mirrors` 从 Mojang 官方 URL 推导镜像地址（`piston-meta` / `piston-data` / `launchermeta` / `launcher` 路径原样拼接，`libraries.minecraft.net` 拼到 `/maven/`，`resources.download.minecraft.net` 拼到 `/assets/`），`expand_plan_with_mirrors` 给计划逐条追加镜像源，官方源恒在前。版本目录与版本 JSON 这类单次元数据请求用 `fetch_first_available`：只在传输层失败时换镜像，内容校验失败不回退。没有镜像规则的主机保持单源，不猜测地址。
 
 早期对 BMCLAPI、高校镜像、加载器 maven 和内容平台的调研笔记保存在本地 `docs/excluded/download-sources.md`（该目录已由 `.gitignore` 排除，不随仓库发布），其中的校验契约（provider 只换地址不换身份、失败要记录 provider/artifact/attempt/status/reason、429/5xx/超时有限重试、校验失败丢弃临时文件、缓存状态 `pending | ready | failed | stale`）是对本模块的要求；已实现的是前四条与 `failed` 一种状态，`ready` / `stale` 两种缓存状态的落盘**待实现确认**。
 
