@@ -114,7 +114,9 @@ export type {
   SchematicFolderSkip,
   SchematicListing,
   SchematicMetadata,
+  SchematicOrigin,
   SchematicRegion,
+  SchematicSource,
   SchematicSummary,
 } from "./schematics";
 

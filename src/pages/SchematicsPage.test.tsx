@@ -48,16 +48,23 @@ function schematicListing(): SchematicListing {
             relativePath: "castle.litematic",
             fileName: "castle.litematic",
             sizeBytes: 2048,
+            origin: "instance",
+            originVersion: "",
             metadata: metadata("城堡"),
           },
           {
             relativePath: "红石/circuit.litematic",
             fileName: "circuit.litematic",
             sizeBytes: 4096,
+            origin: "instance",
+            originVersion: "",
             metadata: metadata("红石电路"),
           },
         ],
         failed: [],
+        sources: [
+          { origin: "instance", originVersion: "", label: "实例目录/schematics" },
+        ],
       },
       {
         id: REDSTONE,
@@ -69,10 +76,15 @@ function schematicListing(): SchematicListing {
             relativePath: "trap.litematic",
             fileName: "trap.litematic",
             sizeBytes: 1024,
+            origin: "version",
+            originVersion: "1.20.1",
             metadata: metadata("陷阱"),
           },
         ],
         failed: [],
+        sources: [
+          { origin: "version", originVersion: "1.20.1", label: "versions/1.20.1/schematics" },
+        ],
       },
     ],
     skipped: [],
@@ -290,6 +302,8 @@ describe("SchematicsPage", () => {
             relativePath: "城堡/broken.litematic",
             fileName: "broken.litematic",
             reason: "unparseable",
+            origin: "instance",
+            originVersion: "",
           },
         ];
         return listing;

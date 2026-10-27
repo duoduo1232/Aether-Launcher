@@ -834,6 +834,31 @@ button { letter-spacing: 0; }
   flex-wrap: wrap;
 }
 
+/* 一个来源（实例自己的 / 游戏目录根上的 / 某个版本的 schematics）分区。 */
+.schematic-source {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schematic-source + .schematic-source {
+  margin-block-start: 8px;
+  padding-block-start: 8px;
+  border-block-start: 1px solid var(--colorNeutralStroke2);
+}
+
+.schematic-source-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schematic-source-header code {
+  font-family: var(--fontFamilyMonospace);
+  font-size: var(--fontSizeBase200);
+}
+
 .schematic-tree {
   display: flex;
   flex-direction: column;

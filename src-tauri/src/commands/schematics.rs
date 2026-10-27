@@ -54,10 +54,13 @@ pub struct SchematicMetadataDto {
     enclosing_size: [i32; 3],
 }
 
+/// Litematica 在用户没填名字时写的占位值；按「没有名字」处理，界面回退到文件名。
+const UNNAMED: &str = "unnamed";
+
 impl SchematicMetadataDto {
-    fn from_metadata(metadata: &LitematicMetadata) -> Self {
+    fn from_metadata(metadata: &LitematicMetadata, file_name: &str) -> Self {
         Self {
-            name: metadata.name.clone(),
+            name: display_name(&metadata.name, file_name),
             author: metadata.author.clone(),
             description: metadata.description.clone(),
             format_version: metadata.format_version,
@@ -71,14 +74,35 @@ impl SchematicMetadataDto {
     }
 }
 
+/// 投影的展示名：元数据里没填（空白或 `Unnamed`）时用文件名去掉扩展名。
+/// 很多投影的作者只填了作者和方块数，名字留着占位值，直接用会让一整列都叫 `Unnamed`。
+fn display_name(name: &str, file_name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(UNNAMED) {
+        let stem = file_name
+            .strip_suffix(".litematic")
+            .unwrap_or(file_name)
+            .trim();
+        if !stem.is_empty() {
+            return stem.to_owned();
+        }
+    }
+    name.to_owned()
+}
+
 /// 一个实例里的投影图列表项。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchematicSummary {
-    /// `schematics/` 下的相对路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。
+    /// 相对**所属来源目录**的路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。
     relative_path: String,
     file_name: String,
     size_bytes: u64,
+    /// 这份投影在哪个 `schematics/` 里：`instance` 是实例自己的，`version` 是
+    /// 游戏目录下某个版本的，`game` 是游戏目录根上的。
+    origin: &'static str,
+    /// 来源所在的版本目录名；实例自己的和游戏目录根上的为空字符串。
+    origin_version: String,
     metadata: SchematicMetadataDto,
 }
 
@@ -89,6 +113,8 @@ pub struct FailedSchematic {
     relative_path: String,
     file_name: String,
     reason: &'static str,
+    origin: &'static str,
+    origin_version: String,
 }
 
 /// 一个有投影的实例（版本）自动识别出的全部投影图。
@@ -101,6 +127,20 @@ pub struct InstanceSchematics {
     state: &'static str,
     schematics: Vec<SchematicSummary>,
     failed: Vec<FailedSchematic>,
+    /// 实际扫到的来源目录，按扫描顺序；界面据此说明「这些投影从哪读到的」。
+    sources: Vec<SchematicSource>,
+}
+
+/// 扫描内容的说明，给界面显示「这些投影是从哪读到的」。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicSource {
+    /// `instance` / `game` / `version`。
+    origin: &'static str,
+    /// 版本目录名；`instance` 和 `game` 为空。
+    origin_version: String,
+    /// 相对于游戏目录的描述，如 `schematics` 或 `versions/1.20.1/schematics`。
+    label: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -234,27 +274,103 @@ fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, Stri
     Err("too many files with the same name in the target folder".to_owned())
 }
 
-/// 扫描一个实例的 `schematics/` 目录，递归保留子文件夹结构。目录不存在视为
-/// 没有投影；解析失败的文件按类别归入 `failed`，不中断扫描。
+/// 一处待扫描的 `schematics/` 目录：**扫描来源**。
+///
+/// 投影在 `.minecraft` 里是被多个版本共用的，既可能放在游戏目录根上，
+/// 也可能放在 `versions/<版本>/schematics`，还可能是实例自己独有的。
+/// 三处都要看，否则用户明明看得到文件、界面却是空的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScanSource {
+    directory: PathBuf,
+    origin: &'static str,
+    /// 版本目录名；实例自己的和游戏目录根上的为空。
+    origin_version: String,
+}
+
+/// 游戏目录下的 `schematics/` 根位置。
+const ORIGIN_INSTANCE: &str = "instance";
+const ORIGIN_GAME: &str = "game";
+const ORIGIN_VERSION: &str = "version";
+
+/// 收集一个实例要扫描的全部来源，按优先级从高到低。
+///
+/// `instance.root` 是受信任的实例存储路径，`instance.minecraft_root` 是它使用的
+/// 游戏目录（可能被共享、也可能是外部目录），前端从不参与。
+fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
+    let mut sources = vec![ScanSource {
+        directory: instance.root.join("schematics"),
+        origin: ORIGIN_INSTANCE,
+        origin_version: String::new(),
+    }];
+
+    let game_root = instance.root.join("minecraft");
+    let shared = game_root.join("schematics");
+    if !sources.iter().any(|source| source.directory == shared) {
+        sources.push(ScanSource {
+            directory: shared,
+            origin: ORIGIN_GAME,
+            origin_version: String::new(),
+        });
+    }
+
+    // `versions/<版本>/schematics`：版本隔离的启动器把每个版本的投影放在这里。
+    // 只读一层目录名，不递归进 `versions` 内部，避免把库目录当投影扫。
+    let versions = game_root.join("versions");
+    if let Ok(entries) = fs::read_dir(&versions) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .collect();
+        names.sort();
+        for name in names {
+            let directory = versions.join(&name).join("schematics");
+            if !directory.is_dir() {
+                continue;
+            }
+            if sources.iter().any(|source| source.directory == directory) {
+                continue;
+            }
+            sources.push(ScanSource {
+                directory,
+                origin: ORIGIN_VERSION,
+                origin_version: name,
+            });
+        }
+    }
+
+    sources
+}
+
+/// 扫描一个实例的所有来源目录，递归保留子文件夹结构。目录不存在视为没有投影；
+/// 解析失败的文件按类别归入 `failed`，不中断扫描。
 fn scan_schematics(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedSchematic>) {
     let mut summaries = Vec::new();
     let mut failed = Vec::new();
     let mut budget = MAX_SCAN_ENTRIES;
-    walk_schematics(
-        &instance.root.join("schematics"),
-        "",
-        0,
-        &mut budget,
-        &mut summaries,
-        &mut failed,
-    );
-    summaries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    failed.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    for source in scan_sources(instance) {
+        walk_schematics(&source, "", 0, &mut budget, &mut summaries, &mut failed);
+    }
+    // 相对路径在同一个来源里唯一；跨来源按来源顺序排在后面。
+    summaries.sort_by(|left, right| {
+        (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
+            &right.origin,
+            &right.origin_version,
+            &right.relative_path,
+        ))
+    });
+    failed.sort_by(|left, right| {
+        (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
+            &right.origin,
+            &right.origin_version,
+            &right.relative_path,
+        ))
+    });
     (summaries, failed)
 }
 
 fn walk_schematics(
-    directory: &Path,
+    source: &ScanSource,
     prefix: &str,
     depth: usize,
     budget: &mut usize,
@@ -264,7 +380,7 @@ fn walk_schematics(
     if depth > MAX_RELATIVE_DEPTH || *budget == 0 {
         return;
     }
-    let entries = match fs::read_dir(directory) {
+    let entries = match fs::read_dir(&source.directory) {
         Ok(entries) => entries,
         Err(_) => return,
     };
@@ -293,18 +409,25 @@ fn walk_schematics(
             continue;
         }
         if metadata.is_dir() {
-            walk_schematics(&path, &relative, depth + 1, budget, summaries, failed);
+            let nested = ScanSource {
+                directory: path,
+                origin: source.origin,
+                origin_version: source.origin_version.clone(),
+            };
+            walk_schematics(&nested, &relative, depth + 1, budget, summaries, failed);
             continue;
         }
         if !metadata.is_file() || !name.ends_with(".litematic") {
             continue;
         }
-        match summarize_file(&path, &relative, name) {
+        match summarize_file(&path, &relative, name, source) {
             Ok(summary) => summaries.push(summary),
             Err(reason) => failed.push(FailedSchematic {
                 relative_path: relative,
                 file_name: name.to_owned(),
                 reason,
+                origin: source.origin,
+                origin_version: source.origin_version.clone(),
             }),
         }
     }
@@ -314,6 +437,7 @@ fn summarize_file(
     path: &Path,
     relative_path: &str,
     file_name: &str,
+    source: &ScanSource,
 ) -> Result<SchematicSummary, &'static str> {
     let size = fs::metadata(path).map_err(|_| "unreadable")?.len();
     if size > MAX_SCHEMATIC_FILE_BYTES {
@@ -325,11 +449,47 @@ fn summarize_file(
         relative_path: relative_path.to_owned(),
         file_name: file_name.to_owned(),
         size_bytes: size,
-        metadata: SchematicMetadataDto::from_metadata(&metadata),
+        origin: source.origin,
+        origin_version: source.origin_version.clone(),
+        metadata: SchematicMetadataDto::from_metadata(&metadata, file_name),
     })
 }
+/// 只把真正扫出文件（或解析失败文件）的来源报给界面，空目录不占位置。
+fn source_labels(
+    instance: &GameInstance,
+    summaries: &[SchematicSummary],
+    failed: &[FailedSchematic],
+) -> Vec<SchematicSource> {
+    let mut labels = Vec::new();
+    for source in scan_sources(instance) {
+        let used = summaries.iter().any(|item| {
+            item.origin == source.origin && item.origin_version == source.origin_version
+        }) || failed.iter().any(|item| {
+            item.origin == source.origin && item.origin_version == source.origin_version
+        });
+        if !used {
+            continue;
+        }
+        labels.push(SchematicSource {
+            label: source_label(&source),
+            origin: source.origin,
+            origin_version: source.origin_version,
+        });
+    }
+    labels
+}
 
-/// 自动识别每个实例游戏目录 `schematics/` 下的投影文件，按实例分组返回。
+/// 来源的相对描述：实例自己的报 `schematics`，其余报游戏目录下的相对路径。
+fn source_label(source: &ScanSource) -> String {
+    match source.origin {
+        ORIGIN_VERSION => format!("versions/{}/schematics", source.origin_version),
+        ORIGIN_GAME => "schematics".to_owned(),
+        _ => "实例目录/schematics".to_owned(),
+    }
+}
+
+/// 自动识别每个实例的所有 `schematics/`（实例自己的、游戏目录根上的、
+/// `versions/<版本>/` 下的），按实例分组返回。
 /// 没有投影也没有解析失败文件的实例直接跳过——列表里只出现有投影的版本。
 #[tauri::command]
 pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicListing, String> {
@@ -343,6 +503,8 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
             if schematics.is_empty() && failed.is_empty() {
                 continue;
             }
+            // 只报真正扫出内容的来源，避免把空目录也列出来。
+            let sources = source_labels(instance, &schematics, &failed);
             instances.push(InstanceSchematics {
                 id: instance.id.to_string(),
                 name: instance.name.clone(),
@@ -350,6 +512,7 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
                 state: state_label(&instance.state),
                 schematics,
                 failed,
+                sources,
             });
         }
         Ok(SchematicListing {
@@ -384,11 +547,12 @@ pub(crate) async fn read_schematic(
             .next()
             .unwrap_or(&relative_path)
             .to_owned();
+        let metadata = SchematicMetadataDto::from_metadata(&schematic.metadata, &file_name);
         Ok(SchematicDetail {
             instance_id,
             relative_path,
             file_name,
-            metadata: SchematicMetadataDto::from_metadata(&schematic.metadata),
+            metadata,
             regions: schematic.regions,
         })
     })
@@ -691,3 +855,7 @@ pub(crate) async fn paste_schematic(
 #[cfg(test)]
 #[path = "schematics_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "schematics_sources_tests.rs"]
+mod sources_tests;

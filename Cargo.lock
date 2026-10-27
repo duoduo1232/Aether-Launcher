@@ -52,6 +52,7 @@ dependencies = [
  "aether-runtime",
  "aether-schematic",
  "aether-storage",
+ "flate2",
  "serde",
  "serde_json",
  "tauri",

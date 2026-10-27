@@ -43,7 +43,8 @@ import type {
   SchematicSummary,
 } from "../ipc";
 import { useQuery } from "../lib/query";
-import { buildSchematicTree } from "../lib/schematicTree";
+import { buildSchematicSources } from "../lib/schematicTree";
+import type { SchematicSourceTree } from "../lib/schematicTree";
 import type { PageDefinition } from "../navigation";
 
 type SchematicsPageProps = {
@@ -98,12 +99,12 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   const instancesQuery = useQuery(loadInstances, desktop);
   const allInstances = instancesQuery.data?.instances ?? [];
 
-  const trees = useMemo(
+  const sources = useMemo(
     () =>
       new Map(
         listing.instances.map((instance) => [
           instance.id,
-          buildSchematicTree(instance.schematics),
+          buildSchematicSources(instance.schematics),
         ]),
       ),
     [listing.instances],
@@ -475,7 +476,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
             <VersionPanel
               key={instance.id}
               instance={instance}
-              tree={trees.get(instance.id)}
+              sources={sources.get(instance.id) ?? []}
               open={expandedVersions[instance.id] ?? index === 0}
               busy={busy}
               clipboardReady={clipboard !== null}
@@ -536,7 +537,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
 
 type VersionPanelProps = {
   instance: InstanceSchematics;
-  tree: ReturnType<typeof buildSchematicTree> | undefined;
+  sources: SchematicSourceTree[];
   open: boolean;
   busy: boolean;
   clipboardReady: boolean;
@@ -557,7 +558,7 @@ type VersionPanelProps = {
 
 function VersionPanel({
   instance,
-  tree,
+  sources,
   open,
   busy,
   clipboardReady,
@@ -611,23 +612,35 @@ function VersionPanel({
 
       {open ? (
         <div className="schematic-version-body">
-          {tree && instance.schematics.length > 0 ? (
-            <SchematicTree
-              root={tree}
-              busy={busy}
-              selectionMode={selectionMode}
-              selected={selected}
-              collapsedFolders={collapsedFolders}
-              clipboardReady={clipboardReady}
-              onToggleFolder={onToggleFolder}
-              onToggleSelect={onToggleSelect}
-              onPreview={onPreview}
-              onCopy={onCopy}
-              onPaste={onPaste}
-              onDelete={onDelete}
-              onStartSelection={onStartSelection}
-              onSelectAll={onSelectAll}
-            />
+          {instance.schematics.length > 0 && sources.length > 0 ? (
+            <>
+              {sources.map((source) => (
+                <div className="schematic-source" key={`${source.origin}|${source.originVersion}`}>
+                  <div className="schematic-source-header">
+                    <Text size={200} className="muted">
+                      来源：<code>{source.label}</code>
+                    </Text>
+                    <Badge appearance="tint">{source.total} 个</Badge>
+                  </div>
+                  <SchematicTree
+                    root={source.root}
+                    busy={busy}
+                    selectionMode={selectionMode}
+                    selected={selected}
+                    collapsedFolders={collapsedFolders}
+                    clipboardReady={clipboardReady}
+                    onToggleFolder={onToggleFolder}
+                    onToggleSelect={onToggleSelect}
+                    onPreview={onPreview}
+                    onCopy={onCopy}
+                    onPaste={onPaste}
+                    onDelete={onDelete}
+                    onStartSelection={onStartSelection}
+                    onSelectAll={onSelectAll}
+                  />
+                </div>
+              ))}
+            </>
           ) : (
             <Text className="muted" size={300}>
               这个版本的 schematics 目录里只有无法解析的文件。

@@ -54,10 +54,14 @@ export type SchematicMetadata = {
 };
 
 export type SchematicSummary = {
-  /** `schematics/` 下的相对路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。 */
+  /** 相对**所属来源目录**的路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。 */
   relativePath: string;
   fileName: string;
   sizeBytes: number;
+  /** 这份投影在哪个 `schematics/` 里：实例自己的 / 游戏目录根上的 / 某个版本的。 */
+  origin: SchematicOrigin;
+  /** 来源所在的版本目录名；`instance` 和 `game` 为空字符串。 */
+  originVersion: string;
   metadata: SchematicMetadata;
 };
 
@@ -66,6 +70,22 @@ export type FailedSchematic = {
   relativePath: string;
   fileName: string;
   reason: string;
+  origin: SchematicOrigin;
+  originVersion: string;
+};
+
+/**
+ * 投影所在的位置。`.minecraft` 里投影是多个版本共用的，所以有三处：
+ * 实例自己的目录、游戏目录根上的 `schematics/`、`versions/<版本>/schematics`。
+ */
+export type SchematicOrigin = "instance" | "game" | "version";
+
+/** 实际扫到内容的来源目录，界面用来说明「这些投影从哪读到的」。 */
+export type SchematicSource = {
+  origin: SchematicOrigin;
+  originVersion: string;
+  /** 相对描述，如 `schematics` 或 `versions/1.20.1/schematics`。 */
+  label: string;
 };
 
 /** 一个有投影的实例自动识别出的全部投影图。 */
@@ -76,6 +96,8 @@ export type InstanceSchematics = {
   state: InstanceState;
   schematics: SchematicSummary[];
   failed: FailedSchematic[];
+  /** 实际扫到内容的来源目录。 */
+  sources: SchematicSource[];
 };
 
 export type SchematicListing = {

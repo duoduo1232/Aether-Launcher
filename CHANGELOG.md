@@ -66,6 +66,8 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 ### Fixed
 
 - `.litematic` parsing now follows the layout Litematica actually writes: the name, author, region count and totals live in the `Metadata` compound rather than at the root, the totals are `TAG_Int` (both integer widths are accepted), and a region palette is the `BlockStatePalette` list of block states rather than a name-to-index compound. Every real schematic previously failed with `missing required litematic field RegionCount`, so imports were rejected and no scanned file could be summarised.
+- Schematic discovery only read the instance's private `schematics/` directory, so a `.minecraft` full of projections showed up empty: the files live in the game directory (`schematics/` or `versions/<version>/schematics`), which every launcher shares. All three locations are scanned now, each file carries its `origin` and `originVersion`, and the UI groups them by source. The same relative path in two sources stays two files instead of being collapsed.
+- A metadata name of `Unnamed` (Litematica's placeholder) is now treated as "no name" and shown as the file name instead of a column of `Unnamed` entries.
 
 ### Added
 

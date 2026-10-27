@@ -195,10 +195,12 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 ## 投影图（`.litematic`）
 
-投影文件跟着实例走：每个实例游戏目录下的 `schematics/` 就是它的投影库。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
+`.minecraft` 里的投影是**所有启动器共用**的：它不在实例私有目录里，而在游戏目录里。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
 
 - **`.litematic` 的真实布局**：根上是 `Version`、`SubVersion`、`MinecraftDataVersion`、`Metadata` 复合和 `Regions` 复合。名称、作者、`RegionCount`、`TotalBlocks`、`TotalVolume`、`EnclosingSize` 都在 `Metadata` 里，计数是 `TAG_Int`（也接受 `TAG_Long`）。每个区域的调色板是 `BlockStatePalette`——一个方块状态列表，索引就是列表下标；预览只取其中的 `Name`，`Properties` 不参与上色。
 - **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。
+- **三处来源都要扫**：Litematica 找投影看的是 `schematics/`，而游戏目录可能有三份 `schematics/` —— 游戏目录根上的、`versions/<版本>/schematics`（版本隔离）、以及实例私有目录。只扫其中一处就会出现「文件管理器里明明有一堆，界面是空的」。`scan_sources` 把三处都列出来，每份文件带 `origin`（`instance` / `game` / `version`）和 `originVersion`；同一相对路径出现在两个来源时是两份不同的文件，前端按来源分区渲染，不做合并。
+- **名字为空或 `Unnamed` 时回退到文件名**：很多投影的作者只填作者和方块数，`Metadata.Name` 留着 Litematica 的占位值 `Unnamed`。`display_name` 把空白和 `Unnamed`（大小写不敏感）都当成没填名字，用文件名去掉 `.litematic` 后显示。
 - **只列出有投影的版本**：`list_schematics` 跳过 `schematics/` 不存在或为空的实例，所以 134 个版本里只有真正放过投影的那几个会出现。解析失败的文件仍会带出来，归到所属版本的警告里。
 - **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。
 
