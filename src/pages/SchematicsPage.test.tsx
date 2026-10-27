@@ -401,4 +401,32 @@ describe("SchematicsPage", () => {
     );
     expect(screen.queryByText(/已导入/)).not.toBeInTheDocument();
   });
+
+  it("re-reads both listings when refresh is clicked", async () => {
+    enableTauri();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    const callsBefore = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "list_schematics").length;
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+
+    await waitFor(() => {
+      const callsAfter = vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "list_schematics").length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
+    });
+    // 实例下拉框也要更新：别处新建的版本得能选到。
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "list_instances")
+        .length,
+    ).toBeGreaterThan(1);
+  });
 });

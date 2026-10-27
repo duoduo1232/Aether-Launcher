@@ -8,6 +8,7 @@ import {
   Text,
 } from "@fluentui/react-components";
 import {
+  ArrowSync24Regular,
   ArrowUpload24Regular,
   ClipboardPaste24Regular,
   Cube24Regular,
@@ -385,6 +386,19 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
               onClick={() => void handleImportFolder()}
             >
               导入文件夹
+            </Button>
+            <Button
+              icon={<ArrowSync24Regular />}
+              disabled={!desktop || busy || status === "loading"}
+              onClick={() => {
+                setNotice(null);
+                setError(null);
+                reload();
+                // 实例列表也一起刷：刚在别的页面新建或导入的版本要能选到。
+                instancesQuery.reload();
+              }}
+            >
+              刷新
             </Button>
           </div>
         }
