@@ -305,3 +305,19 @@ fn a_plain_game_folder_is_not_a_launcher() {
 
     assert!(installation_at(&state, temp.path(), &listing_of(temp.path())).is_none());
 }
+
+#[test]
+fn an_hmcl_game_folder_is_recognised_by_its_config() {
+    let temp = TempDir::new("hmcl");
+    temp.touch(".hmcl.json", r#"{"version":3}"#);
+    temp.touch("versions/1.20.1/1.20.1.json", r#"{"id":"1.20.1"}"#);
+
+    let state = ImportState::default();
+    let installation = installation_at(&state, temp.path(), &listing_of(temp.path()))
+        .expect("an HMCL game folder has to be recognised");
+
+    assert_eq!(installation.kind, "hmcl");
+    assert_eq!(installation.sources.len(), 1);
+    assert_eq!(installation.sources[0].source_kind, "hmcl");
+    assert_eq!(installation.sources[0].candidates[0].id, "1.20.1");
+}

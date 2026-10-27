@@ -191,7 +191,7 @@ PCL2 把启动器自身目录写成 `$`，所以 `$\.minecraft` 表示 `<PCL2 �
 
 Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成别的相对路径；只有存在配置文件（`prism::has_config`）的目录才算启动器，光有一个 `instances/` 子目录不算。`mmc-pack.json` 上限 1 MiB，`instance.cfg` 和启动器配置上限 256 KiB。
 
-自动查找是有限搜索：`app.path()` 解析出的真实桌面 / 下载 / 文档目录（Windows 常被重定向到 OneDrive 或别的盘，所以不能用 `%USERPROFILE%\Desktop`）、用户主目录，以及每个固定盘的顶层，合计最多检查 1500 个目录、最多报告 8 个启动器。找不到就退回手动选择，不做全盘遍历。
+自动查找是有限搜索：`app.path()` 解析出的真实桌面 / 下载 / 文档目录（Windows 常被重定向到 OneDrive 或别的盘，所以不能用 `%USERPROFILE%\Desktop`）、用户主目录，以及每个固定盘的顶层，合计最多检查 1500 个目录、最多报告 8 个启动器。每个目录按 PCL2 → Prism → HMCL → BakaXL 的顺序认一次：启动器目录标记优先于游戏目录标记，因为一个启动器目录里可能还留着别的启动器写过的 `.minecraft`。找不到就退回手动选择，不做全盘遍历。
 
 ## 投影图（`.litematic`）
 

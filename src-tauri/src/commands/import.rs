@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use aether_core::InstanceId;
-use aether_storage::import::{bakaxl, pcl2, prism};
+use aether_storage::import::{bakaxl, hmcl, pcl2, prism};
 use aether_storage::{
     ExistingFiles, ImportCandidate, ImportError, ImportSourceKind, MAX_IMPORT_VERSIONS,
     plan_candidates, scan_game_directory,
@@ -372,6 +372,28 @@ fn build_bakaxl_installation(state: &ImportState, root: &Path) -> LauncherInstal
     }
 }
 
+/// Builds the DTO for a launcher whose whole game lives in one directory.
+///
+/// HMCL keeps `.hmcl.json` inside the game folder rather than beside it, so the
+/// launcher root and the game directory are the same path.
+fn build_game_directory_installation(
+    state: &ImportState,
+    root: &Path,
+    kind: ImportSourceKind,
+) -> LauncherInstallationDto {
+    let sources = preview_game_directory(state, root, Some(kind))
+        .ok()
+        .filter(|source| !source.candidates.is_empty())
+        .into_iter()
+        .collect();
+
+    LauncherInstallationDto {
+        kind: kind.as_str(),
+        launcher_root: root.to_string_lossy().into_owned(),
+        sources,
+    }
+}
+
 /// Snapshot of one directory's immediate entries, for the marker checks.
 fn listing_of(directory: &Path) -> ExistingFiles {
     let mut entries = Vec::new();
@@ -387,6 +409,10 @@ fn listing_of(directory: &Path) -> ExistingFiles {
 
 /// Recognises the launcher `directory` belongs to, if any.
 ///
+/// The order is PCL2 → Prism → HMCL → BakaXL: a launcher folder marker wins over
+/// a game folder marker, because a launcher folder can contain a `.minecraft`
+/// that another launcher once wrote into.
+///
 /// Returns `None` for a directory that is not a launcher, and for a launcher
 /// whose configuration points at nothing importable — the caller then keeps
 /// descending, which is how a `.minecraft` below a launcher folder is found.
@@ -401,6 +427,11 @@ fn installation_at(
     }
     if prism::has_config(directory) {
         let installation = build_prism_installation(state, directory);
+        return (!installation.sources.is_empty()).then_some(installation);
+    }
+    if hmcl::matches(listing) {
+        let installation =
+            build_game_directory_installation(state, directory, ImportSourceKind::Hmcl);
         return (!installation.sources.is_empty()).then_some(installation);
     }
     if bakaxl::matches(listing) {
@@ -537,16 +568,7 @@ pub(crate) async fn pick_launcher_folder(
         None => {
             // A plain game directory: label it by what its listing looks like.
             let kind = aether_storage::detect(&listing).unwrap_or(ImportSourceKind::Folder);
-            let sources = preview_game_directory(&state, &root, Some(kind))
-                .ok()
-                .filter(|source| !source.candidates.is_empty())
-                .into_iter()
-                .collect();
-            LauncherInstallationDto {
-                kind: kind.as_str(),
-                launcher_root: root.to_string_lossy().into_owned(),
-                sources,
-            }
+            build_game_directory_installation(&state, &root, kind)
         }
     };
 
