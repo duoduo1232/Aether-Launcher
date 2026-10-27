@@ -40,6 +40,15 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - `aether-schematic` crate: minimal NBT reader and Litematica block-state decoding with preview size caps, plus a data-version-to-release table
 - Schematic management that automatically discovers `.litematic` files in every instance's `schematics` directory and groups them per instance, with metadata showing the originating Minecraft release, import by content, deletion, and cross-instance copy for cross-version use
 - Rotatable 3D schematic preview rendered with three.js instanced meshes and lattice sampling above a block budget
+- Schematic browser that keeps the `schematics` folder structure: the backend walks subfolders and returns a `/`-separated `relativePath` per file, and only versions that actually contain schematics are listed, as a collapsible per-version tree
+- Schematic context menu with copy, cut, paste, delete and multi-select; paste copies or moves files into any folder of any version, renaming on conflict instead of overwriting
+
+- Importing instances from an existing `.minecraft` folder, HMCL, PCL2 or BakaXL installation: the version JSON and its `inheritsFrom` ancestors are copied into the launcher-owned game tree and one managed instance is created per selected version, with the client JAR, libraries and assets fetched afterwards through the existing installer and its BMCLAPI mirror
+- PCL2 detection that reads the game folder recorded in `PCL/Setup.ini` (`LaunchFolderSelect`, with `$` resolved against the launcher folder), plus a manual fallback when the bounded search finds nothing
+- BakaXL detection by its launcher markers, with the game read from `.minecraft` beside the executable
+- Prism Launcher and MultiMC import: instances are read from `mmc-pack.json` and `instance.cfg`, and one managed instance is created per selected base version; loader components are reported but not installed
+- One-click launcher detection covering PCL2, HMCL, BakaXL, Prism Launcher and MultiMC in a single bounded pass, with the detected launcher labelled in the import dialog
+- Native folder picker in the backend via `tauri-plugin-dialog`, so the import commands never accept a path from the frontend; scanned sources are referenced by a single-use token
 
 ### Security
 
@@ -52,3 +61,4 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - Home greeting follows the local time of day
 - Document language set to `zh-CN`
 - Download plans reject unsafe or duplicate destination paths
+- `copy_schematic_to_instance` replaced by `paste_schematic`, which covers both same-instance folder moves and cross-version copies; the schematic commands now take a `relativePath` instead of a bare file name

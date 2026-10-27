@@ -63,6 +63,22 @@ export type {
   SkippedInstance,
 } from "./instances";
 
+// 从现有 .minecraft 或其他启动器导入实例
+export {
+  detectLauncherInstallations,
+  importVersions,
+  pickImportFolder,
+  pickLauncherFolder,
+} from "./import";
+export type {
+  ImportCandidate,
+  ImportResult,
+  ImportSkipped,
+  ImportSource,
+  ImportSourceKind,
+  LauncherInstallation,
+} from "./import";
+
 // 官方 Minecraft 版本目录（只读）
 export {
   listMinecraftVersions,
@@ -82,11 +98,11 @@ export type { MicrosoftLoginStatus } from "./accounts";
 // 投影图（.litematic）管理
 export {
   IMPORT_LIMIT_BYTES,
-  copySchematicToInstance,
   deleteSchematic,
   emptySchematicListing,
   importSchematic,
   listSchematics,
+  pasteSchematic,
   readSchematic,
 } from "./schematics";
 export type {

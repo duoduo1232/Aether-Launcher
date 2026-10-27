@@ -55,7 +55,9 @@ async fn list_java_runtimes() -> Result<Vec<JavaRuntimeInfo>, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::launch::LaunchState::default())
+        .manage(commands::import::ImportState::default())
         .invoke_handler(tauri::generate_handler![
             application_info,
             list_java_runtimes,
@@ -64,6 +66,10 @@ pub fn run() {
             commands::install::install_vanilla_client_libraries,
             commands::instances::list_instances,
             commands::instances::create_instance,
+            commands::import::pick_import_folder,
+            commands::import::detect_launcher_installations,
+            commands::import::pick_launcher_folder,
+            commands::import::import_versions,
             commands::launch::activate_installed_instance,
             commands::launch::start_installed_instance,
             commands::launch::stop_installed_instance,
@@ -71,7 +77,7 @@ pub fn run() {
             commands::schematics::read_schematic,
             commands::schematics::import_schematic,
             commands::schematics::delete_schematic,
-            commands::schematics::copy_schematic_to_instance,
+            commands::schematics::paste_schematic,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

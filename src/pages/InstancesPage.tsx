@@ -3,7 +3,6 @@ import {
   Button,
   SearchBox,
   Text,
-  Tooltip,
 } from "@fluentui/react-components";
 import {
   Add24Regular,
@@ -13,6 +12,7 @@ import {
 } from "@fluentui/react-icons";
 import { useCallback, useMemo, useState } from "react";
 import { CreateInstanceDialog } from "../components/CreateInstanceDialog";
+import { ImportInstancesDialog } from "../components/ImportInstancesDialog";
 import { EmptyState } from "../components/EmptyState";
 import { InstanceLaunchPanel } from "../components/InstanceLaunchPanel";
 import { InstanceList } from "../components/InstanceList";
@@ -53,6 +53,7 @@ export function InstancesPage({ page }: InstancesPageProps) {
   const desktop = isTauri();
   const [query, setQuery] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [listing, setListing] = useState<InstanceListing>(emptyInstanceListing);
   const [memoryMiB] = useState(loadMemoryMiB);
   const [javaKey] = useState(loadJavaRuntimeKey);
@@ -89,6 +90,13 @@ export function InstancesPage({ page }: InstancesPageProps) {
     },
     [],
   );
+
+  const handleImported = useCallback((imported: InstanceSummary[]) => {
+    setListing((previous) => ({
+      ...previous,
+      instances: [...previous.instances, ...imported],
+    }));
+  }, []);
 
   // 徽章只报数量，空状态标题才负责「还没有实例」这句话，避免同一句文案出现两次
   const badgeText = instances.length === 0 ? "0 个实例" : summariseInstances(instances);
@@ -131,14 +139,14 @@ export function InstancesPage({ page }: InstancesPageProps) {
               value={query}
               onChange={(_, data) => setQuery(data.value)}
             />
-            <Tooltip
-              content="导入现有 .minecraft 或其他启动器的实例还在开发，完成后这里可以一键导入"
-              relationship="description"
+            <Button
+              icon={<Add24Regular />}
+              disabled={!desktop}
+              aria-label="导入实例"
+              onClick={() => setImportOpen(true)}
             >
-              <Button icon={<Add24Regular />} disabled aria-label="导入实例">
-                导入
-              </Button>
-            </Tooltip>
+              导入
+            </Button>
             <Button
               icon={<ArrowSync24Regular />}
               onClick={reload}
@@ -164,7 +172,7 @@ export function InstancesPage({ page }: InstancesPageProps) {
             title="还没有实例"
             body={
               desktop
-                ? "创建一个实例开始，或者等导入功能上线后从现有启动器导入。"
+                ? "创建一个实例开始，或者从现有的 .minecraft、PCL2 导入。"
                 : "浏览器预览里无法读取本机实例，打开桌面版即可看到列表。"
             }
             action={
@@ -228,6 +236,12 @@ export function InstancesPage({ page }: InstancesPageProps) {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onCreated={handleCreated}
+      />
+
+      <ImportInstancesDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={handleImported}
       />
 
       <Text className="page-footnote muted">

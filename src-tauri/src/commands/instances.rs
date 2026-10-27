@@ -25,7 +25,7 @@ pub struct InstanceSummary {
 }
 
 impl InstanceSummary {
-    fn from_instance(instance: &GameInstance) -> Self {
+    pub(crate) fn from_instance(instance: &GameInstance) -> Self {
         Self {
             id: instance.id.to_string(),
             name: instance.name.clone(),

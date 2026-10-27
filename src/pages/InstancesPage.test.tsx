@@ -40,10 +40,29 @@ describe("InstancesPage", () => {
     expect(screen.getByText(/浏览器预览读不到本机实例/)).toBeInTheDocument();
   });
 
-  it("explains that importing is not available yet", () => {
+  it("disables importing outside the desktop shell", () => {
     render(<InstancesPage page={page} />);
 
     expect(screen.getByRole("button", { name: "导入实例" })).toBeDisabled();
+  });
+
+  it("opens the import dialog from the toolbar", async () => {
+    enableTauri();
+    vi.mocked(invoke).mockResolvedValue({ instances: [], skipped: [] });
+
+    render(<InstancesPage page={page} />);
+
+    const button = await screen.findByRole("button", { name: "导入实例" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "从文件夹导入" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "从启动器导入" }),
+    ).toBeInTheDocument();
   });
 
   it("lists instances returned by the backend", async () => {

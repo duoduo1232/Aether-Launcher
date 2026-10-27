@@ -60,7 +60,7 @@ src/
 ## IPC 边界
 
 - 前端只通过 `src/ipc/` 调用后端，组件里不直接 `invoke`。
-- 命令在 `src-tauri/src/lib.rs` 里用 `#[tauri::command]` 定义，并列进 `generate_handler!`。当前命令：应用信息、Java 发现、版本目录与原版安装（`catalog` / `vanilla` / `install`）、实例（`instances`）、启动控制（`launch`），以及投影图管理（`schematics`：自动扫描每个实例 `schematics/` 目录并按实例分组返回，读取、导入、删除、跨实例复制都只收实例 ID 与裸文件名）。
+- 命令在 `src-tauri/src/lib.rs` 里用 `#[tauri::command]` 定义，并列进 `generate_handler!`。当前命令：应用信息、Java 发现、版本目录与原版安装（`catalog` / `vanilla` / `install`）、实例（`instances`）、从现有启动器导入（`import`）、启动控制（`launch`），以及投影图管理（`schematics`：自动扫描每个实例 `schematics/` 目录并按实例分组返回，读取、导入、删除、跨实例复制都只收实例 ID 与裸文件名）。
 - 窗口权限在 `src-tauri/capabilities/default.json`，目前只有 `core:default`。这个目录在 CODEOWNERS 里单独列出。
 - 命令是窄化的领域操作（导入这个实例、启动这个实例），参数用类型表达。不提供执行任意命令、读写任意路径的入口。
 
@@ -148,6 +148,70 @@ Java 发现命令 `list_java_runtimes` 是只读且无参数的 IPC：Tauri 使�
 `NativePlan::verify_installed(game_directory, natives_directory)` 会验证来源 JAR 完整性，重复执行安全预检查，对照 ZIP 原始内容逐字节核验已解包的 native 文件，拒绝损坏、缺失、额外文件或符号链接。已存在的 natives 目录不因“目录存在”而默认可信。`InstanceLaunchCoordinator::prepare` 保持只读：如需 natives 而目录尚未安装，则返回 `NativesNotReady`。`prepare_and_install` 只会在目标不存在时将**已经下载**的 native JAR 安全解包到 `<game_directory>/natives/<实例UUID>`，并重新校验安装结果；如果已有目录被篡改，返回错误而不擅自覆盖。 `start` 使用这一准备路径，然后才启动 Java 进程。Native classifier JAR 仅用于提取，不进入 JVM classpath。
 
 **仍待实现：** Mojang HTTP 下载与下载缓存回填、资源对象修复、legacy `virtual/legacy` assets、完整身份认证、运行时 Java 自动安装、模组加载器适配，以及进程组优雅关闭。当前接口仅供受信任 Rust 调用，假设游戏数据目录没有不受信任进程同时修改。未向 Tauri 提供任意命令或任意路径执行能力。
+
+## 从现有启动器导入实例
+
+`aether-storage::import` 分三层，任何一层都不复制游戏文件。支持的启动器按磁盘布局分成两类：
+
+| 启动器 | 强标记 | 版本元数据 |
+| --- | --- | --- |
+| PCL2 | `PCL/Setup.ini`、`PCL.ini`、根目录 `Setup.ini` | `versions/<id>/<id>.json` |
+| HMCL | `.hmcl.json`、`hmcl.json`、`hmclversion.cfg` | `versions/<id>/<id>.json` |
+| BakaXL | `BakaXL.exe`、`BakaXL.Core*`、`BakaXL.Plugin` | `versions/<id>/<id>.json`（含 `.minecraft/` 一层） |
+| Prism / MultiMC | `prismlauncher.cfg`、`multimc.cfg` | 没有；`instances/<id>/mmc-pack.json` 描述版本 |
+| 普通游戏文件夹 | 无 | `versions/<id>/<id>.json` |
+
+前三个把游戏放在 `.minecraft` 里，所以一条流水线导入；Prism / MultiMC 用组件格式描述版本，走第二条入口。
+
+- `detect` / `plan_candidates` 是纯函数：输入是目录快照 `ExistingFiles`，输出每个版本的导入计划。检测顺序是 Prism → PCL2 → HMCL → BakaXL：Prism 目录里也有 `.minecraft` 形状的树，先判它才不会被当成普通游戏文件夹。都没有时按普通游戏文件夹处理（`ImportSourceKind::Folder`）。
+- `scan_game_directory` 把真实游戏目录变成快照。它**不遍历整棵树**：真实的 `.minecraft` 光 `libraries/` 和 `assets/` 就有几千个文件，整树扫描会撞上 4096 条目上限。它只收集根目录条目（启动器标记）和 `versions/<id>/<id>.json`（含根下 `.minecraft/` 一层），跳过符号链接，条目上限同样是 4096。`scan_directory` 保留给需要整树快照的调用方。
+- `import_versions(source_root, game_root, base, ids)` 执行导入：读取 `versions/<id>/<id>.json` 及其 `inheritsFrom` 祖先（深度上限 32、单个文件 8 MiB），把每个 JSON 发布到受管游戏目录 `<app data>/game/versions/<id>/`（已存在则不覆盖），再为每个版本创建一个受管实例。
+- `import_prism_instances(launcher_root, base, ids)` 只创建实例，不复制任何文件。Prism 的 `meta/` 是它自己的组件格式，不是 Mojang 版本 JSON，所以实例按 `mmc-pack.json` 里的 `net.minecraft` 组件版本创建；加载器组件（Fabric / Quilt / Forge / NeoForge / LiteLoader）读出来只用于展示，不安装。实例名取自 `instance.cfg` 的 `name=`，不接受调用方传入。
+
+客户端 JAR、依赖库、资源和 natives 不复制。它们由 `install_vanilla_client_libraries` 按清单下载并校验，官方源失败时回退 BMCLAPI 镜像；导入对话框在导入成功后直接提供这一步。Prism 实例没有版本 JSON，所以前端会先调 `cache_vanilla_version_manifest` 把官方清单缓存进受管游戏目录，再补齐文件。
+
+### 导入的 IPC 边界
+
+前端从不传路径，四个命令都在后端完成选择与扫描：
+
+| 命令 | 作用 |
+| --- | --- |
+| `pick_import_folder` | 后端用 `tauri-plugin-dialog` 打开系统文件夹选择框，扫描用户选中的目录并返回预览 |
+| `detect_launcher_installations` | 在有限范围内查找 PCL2 / HMCL / BakaXL / Prism / MultiMC，读取配置里记录的游戏目录或实例 |
+| `pick_launcher_folder` | 手动指定启动器目录或 `.minecraft` 目录，用于自动查找失败的情况 |
+| `import_versions` | 只接收预览返回的 `token` 和勾选的条目 ID |
+
+扫描结果保存在后端 `ImportState` 里，用一次性 token 引用；token 用过即失效，前端既拿不到源目录也无法伪造一个。`ImportState` 存的是 `PendingSource` 枚举（`GameDirectory` / `PrismLauncher`），所以一个 token 不会被送进错误的导入流水线。写入目标始终是应用自己的实例存储和游戏目录。
+
+PCL2 的 `Setup.ini` 用 `:` 分隔（PCL2 自己的写入器拒绝含 `:` 的键名），手改过的文件可能是 `=`，所以两种都认，取先出现的那个分隔符——这样 `LaunchFolderSelect:E:\mc` 和 `LaunchArgumentTitle:foo=bar` 都能正确切分。
+
+配置位置有三种：`<目录>/PCL/Setup.ini`（文档布局）、`<目录>/PCL.ini`（旧版平铺），以及 `<目录>/Setup.ini`——后者要么是改包的启动器把文件放在根目录，要么是用户直接选中了 `PCL` 配置文件夹本身。选中 `PCL` 文件夹时，只有当配置里出现 `$` 相对路径、且父目录能解析出带 `versions/` 的游戏目录，才把父目录当作启动器目录；绝对路径不受影响。任意目录里一个不像 PCL2 的 `Setup.ini` 会被拒绝，避免把普通安装器目录当成启动器。
+
+PCL2 把启动器自身目录写成 `$`，所以 `$\.minecraft` 表示 `<PCL2 目录>\.minecraft`，含 `..` 的值直接拒绝。PCL2 通常把自定义文件夹列表放在注册表，因此 `LaunchFolders` 只在 `Setup.ini` 里出现时才作为补充读取。
+
+Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成别的相对路径；只有存在配置文件（`prism::has_config`）的目录才算启动器，光有一个 `instances/` 子目录不算。`mmc-pack.json` 上限 1 MiB，`instance.cfg` 和启动器配置上限 256 KiB。
+
+自动查找是有限搜索：`app.path()` 解析出的真实桌面 / 下载 / 文档目录（Windows 常被重定向到 OneDrive 或别的盘，所以不能用 `%USERPROFILE%\Desktop`）、用户主目录，以及每个固定盘的顶层，合计最多检查 1500 个目录、最多报告 8 个启动器。找不到就退回手动选择，不做全盘遍历。
+
+## 投影图（`.litematic`）
+
+投影文件跟着实例走：每个实例游戏目录下的 `schematics/` 就是它的投影库。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
+
+- **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。
+- **只列出有投影的版本**：`list_schematics` 跳过 `schematics/` 不存在或为空的实例，所以 134 个版本里只有真正放过投影的那几个会出现。解析失败的文件仍会带出来，归到所属版本的警告里。
+- **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。
+
+| 命令 | 作用 |
+| --- | --- |
+| `list_schematics` | 递归扫描所有实例，只返回有投影的版本 |
+| `read_schematic` | 完整解码一个投影，返回 3D 预览数据 |
+| `import_schematic` | 前端读取用户选择的文件**内容**传进来，写进 `schematics/` 根目录，同名拒绝覆盖 |
+| `delete_schematic` | 删除一个投影 |
+| `paste_schematic` | 复制或移动到目标版本的任意文件夹，返回新的相对路径 |
+
+`paste_schematic` 同时覆盖「同版本内整理目录」和「跨版本共享」：源和目标可以是同一个实例。目标已有同名文件时自动改名成 `名字 (2).litematic`，不覆盖已有投影；`moveFile` 为真时写完再删源。写入一律先落 `.staging-*` 临时文件再原子改名，避免半截文件被当成可解析的投影。
+
+前端一次只在一个版本里多选，避免跨版本批量操作的语义含糊；剪贴板只记实例 ID 和相对路径，粘贴时才真正落盘。
 
 ## 还没有的部分
 

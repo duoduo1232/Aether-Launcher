@@ -6,20 +6,25 @@ import type { InstanceState } from "./instances";
  * 投影图（`.litematic`）命令的类型化封装。
  *
  * 命令定义在 `src-tauri/src/commands/schematics.rs`：投影文件**自动按实例
- * 识别**——后端扫描每个实例游戏目录下的 `schematics/`。IPC 只传实例 ID、
- * 裸文件名与文件内容，从不传路径。
+ * 识别**——后端递归扫描每个实例游戏目录下的 `schematics/`，子文件夹结构
+ * 用 `relativePath`（`/` 分隔）带回来。IPC 只传实例 ID、`schematics/` 下的
+ * 相对路径与文件内容，从不传绝对路径。
+ *
+ * 列表只包含**有投影的实例**：没有 `schematics/` 目录的版本不会出现。
  */
 
 declare module "./call" {
   interface CommandArgs {
     list_schematics: void;
-    read_schematic: { instanceId: string; fileName: string };
+    read_schematic: { instanceId: string; relativePath: string };
     import_schematic: { instanceId: string; fileName: string; bytes: number[] };
-    delete_schematic: { instanceId: string; fileName: string };
-    copy_schematic_to_instance: {
+    delete_schematic: { instanceId: string; relativePath: string };
+    paste_schematic: {
       fromInstanceId: string;
+      fromPath: string;
       toInstanceId: string;
-      fileName: string;
+      toFolder: string;
+      moveFile: boolean;
     };
   }
 
@@ -28,7 +33,7 @@ declare module "./call" {
     read_schematic: SchematicDetail;
     import_schematic: string;
     delete_schematic: null;
-    copy_schematic_to_instance: string;
+    paste_schematic: string;
   }
 }
 
@@ -47,6 +52,8 @@ export type SchematicMetadata = {
 };
 
 export type SchematicSummary = {
+  /** `schematics/` 下的相对路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。 */
+  relativePath: string;
   fileName: string;
   sizeBytes: number;
   metadata: SchematicMetadata;
@@ -54,11 +61,12 @@ export type SchematicSummary = {
 
 /** 扫描时解析失败的文件；reason 是稳定分类（unreadable/unparseable/oversized）。 */
 export type FailedSchematic = {
+  relativePath: string;
   fileName: string;
   reason: string;
 };
 
-/** 一个实例自动识别出的全部投影图。 */
+/** 一个有投影的实例自动识别出的全部投影图。 */
 export type InstanceSchematics = {
   id: string;
   name: string;
@@ -69,6 +77,7 @@ export type InstanceSchematics = {
 };
 
 export type SchematicListing = {
+  /** 只包含有投影（或解析失败文件）的实例。 */
   instances: InstanceSchematics[];
   skipped: string[];
 };
@@ -84,6 +93,7 @@ export type SchematicRegion = {
 
 export type SchematicDetail = {
   instanceId: string;
+  relativePath: string;
   fileName: string;
   metadata: SchematicMetadata;
   regions: SchematicRegion[];
@@ -106,12 +116,12 @@ export async function listSchematics(): Promise<SchematicListing> {
 
 export async function readSchematic(
   instanceId: string,
-  fileName: string,
+  relativePath: string,
 ): Promise<SchematicDetail> {
-  return callCommand("read_schematic", { instanceId, fileName });
+  return callCommand("read_schematic", { instanceId, relativePath });
 }
 
-/** 把文件内容导入指定实例。浏览器预览会 reject，调用方负责提示。 */
+/** 把文件内容导入指定实例的 `schematics/` 根目录。浏览器预览会 reject。 */
 export async function importSchematic(
   instanceId: string,
   fileName: string,
@@ -126,20 +136,30 @@ export async function importSchematic(
 
 export async function deleteSchematic(
   instanceId: string,
-  fileName: string,
+  relativePath: string,
 ): Promise<void> {
-  await callCommand("delete_schematic", { instanceId, fileName });
+  await callCommand("delete_schematic", { instanceId, relativePath });
 }
 
-/** 跨实例复制（跨版本共享）；源与目标相同时后端会拒绝。 */
-export async function copySchematicToInstance(
+/**
+ * 把投影复制或移动到目标文件夹，返回新的相对路径。
+ *
+ * 源和目标可以是同一个实例（整理目录），也可以是不同实例（跨版本共享）。
+ * `toFolder` 传空字符串表示 `schematics/` 根目录；目标已有同名文件时后端
+ * 自动改名成 `名字 (2).litematic`，不覆盖已有投影。
+ */
+export async function pasteSchematic(
   fromInstanceId: string,
+  fromPath: string,
   toInstanceId: string,
-  fileName: string,
+  toFolder: string,
+  moveFile: boolean,
 ): Promise<string> {
-  return callCommand("copy_schematic_to_instance", {
+  return callCommand("paste_schematic", {
     fromInstanceId,
+    fromPath,
     toInstanceId,
-    fileName,
+    toFolder,
+    moveFile,
   });
 }

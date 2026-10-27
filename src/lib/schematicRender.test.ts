@@ -9,6 +9,7 @@ function detailWith(
 ): SchematicDetail {
   return {
     instanceId: "test-instance",
+    relativePath: "test.litematic",
     fileName: "test.litematic",
     metadata: {
       name: "test",

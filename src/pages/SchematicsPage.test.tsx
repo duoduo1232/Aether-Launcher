@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SchematicListing } from "../ipc";
+import type { InstanceListing, SchematicListing } from "../ipc";
 import { SchematicsPage } from "./SchematicsPage";
 import type { PageDefinition } from "../navigation";
 
@@ -16,6 +16,85 @@ const page: PageDefinition = {
   pendingBody: "",
 };
 
+const SURVIVAL = "11111111-1111-4111-8111-111111111111";
+const REDSTONE = "22222222-2222-4222-8222-222222222222";
+
+function metadata(name: string) {
+  return {
+    name,
+    author: "tester",
+    description: "",
+    formatVersion: 6,
+    minecraftDataVersion: 3955,
+    createdForRelease: "1.21.1",
+    regionCount: 1,
+    totalBlocks: 800,
+    totalVolume: 1000,
+    enclosingSize: [10, 10, 10] as [number, number, number],
+  };
+}
+
+/** 后端只返回有投影的版本；`空版本` 只出现在实例列表里。 */
+function schematicListing(): SchematicListing {
+  return {
+    instances: [
+      {
+        id: SURVIVAL,
+        name: "生存 1.21",
+        version: "1.21.1",
+        state: "ready",
+        schematics: [
+          {
+            relativePath: "castle.litematic",
+            fileName: "castle.litematic",
+            sizeBytes: 2048,
+            metadata: metadata("城堡"),
+          },
+          {
+            relativePath: "红石/circuit.litematic",
+            fileName: "circuit.litematic",
+            sizeBytes: 4096,
+            metadata: metadata("红石电路"),
+          },
+        ],
+        failed: [],
+      },
+      {
+        id: REDSTONE,
+        name: "红石实验",
+        version: "1.20.1",
+        state: "ready",
+        schematics: [
+          {
+            relativePath: "trap.litematic",
+            fileName: "trap.litematic",
+            sizeBytes: 1024,
+            metadata: metadata("陷阱"),
+          },
+        ],
+        failed: [],
+      },
+    ],
+    skipped: [],
+  };
+}
+
+function instanceListing(): InstanceListing {
+  return {
+    instances: [
+      { id: SURVIVAL, name: "生存 1.21", version: "1.21.1", state: "ready" },
+      { id: REDSTONE, name: "红石实验", version: "1.20.1", state: "ready" },
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        name: "空版本",
+        version: "1.19.2",
+        state: "ready",
+      },
+    ],
+    skipped: [],
+  };
+}
+
 function enableTauri() {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     value: {},
@@ -23,45 +102,24 @@ function enableTauri() {
   });
 }
 
-function instanceListing(): SchematicListing {
-  return {
-    instances: [
-      {
-        id: "11111111-1111-4111-8111-111111111111",
-        name: "生存 1.21",
-        version: "1.21.1",
-        state: "ready",
-        schematics: [
-          {
-            fileName: "castle.litematic",
-            sizeBytes: 2048,
-            metadata: {
-              name: "城堡",
-              author: "tester",
-              description: "",
-              formatVersion: 6,
-              minecraftDataVersion: 3955,
-              createdForRelease: "1.21.1",
-              regionCount: 1,
-              totalBlocks: 800,
-              totalVolume: 1000,
-              enclosingSize: [10, 10, 10],
-            },
-          },
-        ],
-        failed: [],
-      },
-      {
-        id: "22222222-2222-4222-8222-222222222222",
-        name: "红石实验",
-        version: "1.20.1",
-        state: "ready",
-        schematics: [],
-        failed: [],
-      },
-    ],
-    skipped: [],
-  };
+function mockBackend(
+  overrides: Record<string, (args: unknown) => unknown> = {},
+) {
+  vi.mocked(invoke).mockImplementation(
+    async (command: string, args?: unknown) => {
+      const handler = overrides[command];
+      if (handler) {
+        return handler(args);
+      }
+      if (command === "list_schematics") {
+        return schematicListing();
+      }
+      if (command === "list_instances") {
+        return instanceListing();
+      }
+      throw new Error(`unexpected command ${command}`);
+    },
+  );
 }
 
 beforeEach(() => {
@@ -77,44 +135,165 @@ describe("SchematicsPage", () => {
   it("renders the desktop notice in a plain browser", () => {
     render(<SchematicsPage page={page} />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "投影图" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "投影图" }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/浏览器预览读不到本机实例/)).toBeInTheDocument();
   });
 
-  it("groups automatically discovered schematics by instance", async () => {
+  it("only shows versions that actually have schematics", async () => {
     enableTauri();
-    vi.mocked(invoke).mockImplementation(async (command: string) => {
-      if (command === "list_schematics") {
-        return instanceListing();
-      }
-      throw new Error(`unexpected command ${command}`);
-    });
+    mockBackend();
 
     render(<SchematicsPage page={page} />);
 
     await waitFor(() => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
-    expect(screen.getByText("生存 1.21")).toBeInTheDocument();
-    expect(screen.getByText(/出自 MC 1.21.1/)).toBeInTheDocument();
-    // 空实例给出说明而不是被折叠。
     expect(
-      screen.getByText(/这个实例的 schematics 目录里还没有投影文件/),
+      screen.getByRole("button", { name: "生存 1.21（1.21.1）" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "红石实验（1.20.1）" }),
+    ).toBeInTheDocument();
+    // `空版本` 没有 schematics 目录，后端不返回，页面也就不该出现。
+    expect(screen.queryByText("空版本")).not.toBeInTheDocument();
+  });
+
+  it("keeps the folder structure under each version", async () => {
+    enableTauri();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole("button", { name: "文件夹 红石" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("红石电路")).toBeInTheDocument();
+  });
+
+  it("expands a collapsed version on click", async () => {
+    enableTauri();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+    // 第二个版本默认折叠。
+    expect(screen.queryByText("陷阱")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "红石实验（1.20.1）" }),
+    );
+
+    expect(await screen.findByText("陷阱")).toBeInTheDocument();
+  });
+
+  it("copies a schematic into the clipboard from the context menu", async () => {
+    enableTauri();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "城堡" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制" }));
+
+    expect(
+      await screen.findByText(/已复制 1 个投影：castle\.litematic/),
     ).toBeInTheDocument();
   });
 
-  it("reports unparseable files inside the owning instance", async () => {
+  it("pastes into a folder through the context menu", async () => {
     enableTauri();
-    vi.mocked(invoke).mockImplementation(async (command: string) => {
-      if (command === "list_schematics") {
-        const listing = instanceListing();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "城堡" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制" }));
+    await screen.findByText(/已复制 1 个投影：castle\.litematic/);
+
+    fireEvent.contextMenu(
+      screen.getByRole("button", { name: "文件夹 红石" }),
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "粘贴到此处" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("paste_schematic", {
+        fromInstanceId: SURVIVAL,
+        fromPath: "castle.litematic",
+        toInstanceId: SURVIVAL,
+        toFolder: "红石",
+        moveFile: false,
+      });
+    });
+  });
+
+  it("deletes a schematic after confirmation", async () => {
+    enableTauri();
+    mockBackend();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "城堡" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "删除" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_schematic", {
+        instanceId: SURVIVAL,
+        relativePath: "castle.litematic",
+      });
+    });
+  });
+
+  it("starts multi-select mode from the context menu", async () => {
+    enableTauri();
+    mockBackend();
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "城堡" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "多选" }));
+
+    expect(await screen.findByText("已选 1 项")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "选择 castle.litematic" }),
+    ).toBeChecked();
+  });
+
+  it("reports unparseable files inside the owning version", async () => {
+    enableTauri();
+    mockBackend({
+      list_schematics: () => {
+        const listing = schematicListing();
         listing.instances[0].schematics = [];
         listing.instances[0].failed = [
-          { fileName: "broken.litematic", reason: "unparseable" },
+          {
+            relativePath: "城堡/broken.litematic",
+            fileName: "broken.litematic",
+            reason: "unparseable",
+          },
         ];
         return listing;
-      }
-      throw new Error(`unexpected command ${command}`);
+      },
     });
 
     render(<SchematicsPage page={page} />);
@@ -122,25 +301,32 @@ describe("SchematicsPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/1 个文件无法解析/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/broken\.litematic/)).toBeInTheDocument();
+    expect(screen.getByText(/城堡\/broken\.litematic/)).toBeInTheDocument();
+  });
+
+  it("explains the empty state when no version has schematics", async () => {
+    enableTauri();
+    mockBackend({
+      list_schematics: () => ({ instances: [], skipped: [] }),
+    });
+
+    render(<SchematicsPage page={page} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("还没有版本带投影文件")).toBeInTheDocument();
+    });
   });
 
   it("shows an import error for wrong extensions without calling the backend", async () => {
     enableTauri();
-    vi.mocked(invoke).mockImplementation(async (command: string) => {
-      if (command === "list_schematics") {
-        return instanceListing();
-      }
-      throw new Error(`unexpected command ${command}`);
-    });
+    mockBackend();
 
     render(<SchematicsPage page={page} />);
     await waitFor(() => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
 
-    // 先选定导入目标实例，再触发文件选择。
-    fireEvent.click(screen.getByRole("button", { name: /导入到第一个实例/ }));
+    fireEvent.click(screen.getByRole("button", { name: "导入投影" }));
 
     const input = document.querySelector('input[type="file"]');
     expect(input).not.toBeNull();

@@ -31,6 +31,7 @@ aether-runtime = { path = "../crates/aether-runtime" }
 aether-schematic = { path = "../crates/aether-schematic" }
 aether-storage = { path = "../crates/aether-storage" }
 serde.workspace = true
+tauri-plugin-dialog = "2"
 tracing.workspace = true
 
 [dev-dependencies]

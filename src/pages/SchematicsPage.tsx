@@ -9,65 +9,119 @@ import {
 } from "@fluentui/react-components";
 import {
   ArrowUpload24Regular,
+  ClipboardPaste24Regular,
   Cube24Regular,
-  Delete24Regular,
-  Eye24Regular,
   Warning24Regular,
 } from "@fluentui/react-icons";
-import { useCallback, useRef, useState } from "react";
-import { SchematicPreview } from "../components/SchematicPreview";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 import {
   DesktopOnlyNotice,
   ErrorState,
   ListSkeleton,
 } from "../components/PageState";
-import { PageHeader } from "../components/PageHeader";
+import { SchematicPreview } from "../components/SchematicPreview";
+import { SchematicTree } from "../components/SchematicTree";
 import {
   IMPORT_LIMIT_BYTES,
-  copySchematicToInstance,
   deleteSchematic,
   emptySchematicListing,
   importSchematic,
   isTauri,
+  listInstances,
   listSchematics,
+  pasteSchematic,
   readSchematic,
 } from "../ipc";
 import type {
   InstanceSchematics,
+  InstanceSummary,
   SchematicDetail,
   SchematicSummary,
 } from "../ipc";
 import { useQuery } from "../lib/query";
+import { buildSchematicTree } from "../lib/schematicTree";
 import type { PageDefinition } from "../navigation";
 
 type SchematicsPageProps = {
   page: PageDefinition;
 };
 
+/** 多选状态：一次只在一个版本里选，避免跨版本批量操作把语义搞混。 */
+type Selection = { instanceId: string; paths: Set<string> };
+
+/** 剪贴板：复制或剪切了哪些投影，粘贴时按 `move` 决定要不要删源。 */
+type Clipboard = { instanceId: string; paths: string[]; move: boolean };
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
 /**
  * 投影图页。
  *
- * 后端自动扫描每个实例游戏目录下的 `schematics/`，这里按实例分组展示：
- * - 导入：选一个实例后从文件读内容传给后端（IPC 只传实例 ID、名字和字节，
- *   不传路径），单文件上限 16 MiB；
- * - 预览：后端完整解码后交给 three.js 做 3D 渲染，可旋转缩放；
- * - 跨版本：页顶选一个「复制目标实例」，把投影复制过去；数据版本不同时
- *   预览面板会提示方块状态可能随版本变化。
+ * 后端递归扫描每个实例游戏目录下的 `schematics/`，**只返回有投影的版本**，
+ * 并用 `relativePath` 带回子文件夹结构。这里按版本分组做成手风琴：点标题
+ * 展开，展开后是文件夹树。
+ *
+ * 右键菜单：文件行可以复制 / 剪切 / 删除 / 多选，文件夹行可以「粘贴到此处」。
+ * 复制和剪切都只记在剪贴板里，粘贴时才真正落盘——同版本内整理目录和跨版本
+ * 共享是同一套操作。预览仍由 three.js 渲染。
  */
 export function SchematicsPage({ page }: SchematicsPageProps) {
   const desktop = isTauri();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
-  const [copyTargetId, setCopyTargetId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SchematicDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // 版本默认只展开第一个；用户点过之后以点击结果为准。
+  const [expandedVersions, setExpandedVersions] = useState<Record<string, boolean>>({});
+  // 文件夹默认展开，这里只记被折叠的。
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
 
   const loadList = useCallback(async () => listSchematics(), []);
-  const { status, data, error: listError, reload } = useQuery(loadList, desktop);
+  const {
+    status,
+    data,
+    error: listError,
+    reload,
+  } = useQuery(loadList, desktop);
   const listing = data ?? emptySchematicListing;
+
+  // 导入目标用完整实例列表：还没有投影的版本不会出现在上面的列表里。
+  const loadInstances = useCallback(async () => listInstances(), []);
+  const instancesQuery = useQuery(loadInstances, desktop);
+  const allInstances = instancesQuery.data?.instances ?? [];
+
+  const trees = useMemo(
+    () =>
+      new Map(
+        listing.instances.map((instance) => [
+          instance.id,
+          buildSchematicTree(instance.schematics),
+        ]),
+      ),
+    [listing.instances],
+  );
+
+  const collapsedByInstance = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const key of collapsedFolders) {
+      const index = key.indexOf("|");
+      const id = key.slice(0, index);
+      const path = key.slice(index + 1);
+      const set = map.get(id) ?? new Set<string>();
+      set.add(path);
+      map.set(id, set);
+    }
+    return map;
+  }, [collapsedFolders]);
+
+  const targetId =
+    importTargetId ?? listing.instances[0]?.id ?? allInstances[0]?.id ?? null;
 
   const handleImportClick = useCallback((instanceId: string) => {
     setError(null);
@@ -89,7 +143,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         return;
       }
       if (file.size > IMPORT_LIMIT_BYTES) {
-        setError("文件超过 16 MiB 导入上限。请把它直接放进该实例的 schematics 目录后刷新。");
+        setError("文件超过 16 MiB 导入上限。请把它直接放进该版本的 schematics 目录后刷新。");
         return;
       }
       setBusy(true);
@@ -112,8 +166,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       setError(null);
       setBusy(true);
       try {
-        const loaded = await readSchematic(instanceId, item.fileName);
-        setDetail(loaded);
+        setDetail(await readSchematic(instanceId, item.relativePath));
       } catch (caught) {
         setDetail(null);
         setError(describeError(caught));
@@ -124,59 +177,135 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     [],
   );
 
-  const handleDelete = useCallback(
-    async (instanceId: string, item: SchematicSummary) => {
-      if (!window.confirm(`确定删除「${item.fileName}」吗？此操作无法撤销。`)) {
+  const handleCopy = useCallback(
+    (instanceId: string, paths: string[], move: boolean) => {
+      setError(null);
+      setClipboard({ instanceId, paths, move });
+      setNotice(
+        `已${move ? "剪切" : "复制"} ${paths.length} 个投影。右键目标文件夹选「粘贴到此处」，或点版本标题上的「粘贴到根目录」。`,
+      );
+    },
+    [],
+  );
+
+  const handlePaste = useCallback(
+    async (instanceId: string, folder: string) => {
+      if (!clipboard) {
         return;
       }
       setError(null);
       setNotice(null);
       setBusy(true);
-      try {
-        await deleteSchematic(instanceId, item.fileName);
-        // 函数式更新：被删的就是当前预览时才收起。
+      const failures: string[] = [];
+      let done = 0;
+      for (const path of clipboard.paths) {
+        try {
+          await pasteSchematic(
+            clipboard.instanceId,
+            path,
+            instanceId,
+            folder,
+            clipboard.move,
+          );
+          done += 1;
+        } catch (caught) {
+          failures.push(describeError(caught));
+        }
+      }
+      setBusy(false);
+      if (failures.length > 0) {
+        setError(`${failures.length} 个投影粘贴失败：${failures[0]}`);
+      }
+      if (done > 0) {
+        setNotice(
+          `已粘贴 ${done} 个投影到${folder ? `「${folder}」` : "根目录"}`,
+        );
+        if (clipboard.move) {
+          setClipboard(null);
+          setSelection(null);
+        }
+        reload();
+      }
+    },
+    [clipboard, reload],
+  );
+
+  const handleDelete = useCallback(
+    async (instanceId: string, paths: string[]) => {
+      const label = paths.length === 1 ? `「${paths[0]}」` : `这 ${paths.length} 个投影`;
+      if (!window.confirm(`确定删除${label}吗？此操作无法撤销。`)) {
+        return;
+      }
+      setError(null);
+      setNotice(null);
+      setBusy(true);
+      const failures: string[] = [];
+      let done = 0;
+      for (const path of paths) {
+        try {
+          await deleteSchematic(instanceId, path);
+          done += 1;
+        } catch (caught) {
+          failures.push(describeError(caught));
+        }
+      }
+      setBusy(false);
+      if (failures.length > 0) {
+        setError(`${failures.length} 个投影删除失败：${failures[0]}`);
+      }
+      if (done > 0) {
+        setNotice(`已删除 ${done} 个投影`);
         setDetail((previous) =>
-          previous?.instanceId === instanceId && previous?.fileName === item.fileName
+          previous &&
+          previous.instanceId === instanceId &&
+          paths.includes(previous.relativePath)
             ? null
             : previous,
         );
-        setNotice(`已删除 ${item.fileName}`);
+        setSelection(null);
         reload();
-      } catch (caught) {
-        setError(describeError(caught));
-      } finally {
-        setBusy(false);
       }
     },
     [reload],
   );
 
-  const handleCopy = useCallback(
-    async (fromInstanceId: string, item: SchematicSummary) => {
-      if (!copyTargetId) {
-        setError("先在页顶选择要复制到的目标实例。");
-        return;
+  const toggleFolder = useCallback((instanceId: string, path: string) => {
+    const key = `${instanceId}|${path}`;
+    setCollapsedFolders((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
       }
-      if (copyTargetId === fromInstanceId) {
-        setError("源实例和目标实例是同一个。");
-        return;
+      return next;
+    });
+  }, []);
+
+  const toggleSelect = useCallback((instanceId: string, path: string) => {
+    setSelection((previous) => {
+      if (!previous || previous.instanceId !== instanceId) {
+        return { instanceId, paths: new Set([path]) };
       }
-      setError(null);
-      setNotice(null);
-      setBusy(true);
-      try {
-        await copySchematicToInstance(fromInstanceId, copyTargetId, item.fileName);
-        const target = listing.instances.find((instance) => instance.id === copyTargetId);
-        setNotice(`已复制到「${target?.name ?? copyTargetId}」`);
-        reload();
-      } catch (caught) {
-        setError(describeError(caught));
-      } finally {
-        setBusy(false);
+      const paths = new Set(previous.paths);
+      if (paths.has(path)) {
+        paths.delete(path);
+      } else {
+        paths.add(path);
       }
-    },
-    [copyTargetId, listing.instances, reload],
-  );
+      return paths.size === 0 ? null : { instanceId, paths };
+    });
+  }, []);
+
+  const startSelection = useCallback((instanceId: string, path: string) => {
+    setSelection({ instanceId, paths: new Set([path]) });
+  }, []);
+
+  const selectAll = useCallback((instanceId: string, paths: string[]) => {
+    setSelection(paths.length === 0 ? null : { instanceId, paths: new Set(paths) });
+  }, []);
+
+  const selectedPaths = selection ? [...selection.paths] : [];
 
   return (
     <>
@@ -184,18 +313,41 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         title={page.label}
         description={page.summary}
         action={
-          <Button
-            appearance="primary"
-            icon={<ArrowUpload24Regular />}
-            disabled={!desktop || busy || listing.instances.length === 0}
-            onClick={() => {
-              if (listing.instances.length > 0) {
-                handleImportClick(listing.instances[0].id);
+          <div className="toolbar-actions">
+            <Dropdown
+              aria-label="导入目标版本"
+              placeholder="导入目标版本"
+              disabled={!desktop || allInstances.length === 0}
+              value={describeInstance(
+                allInstances.find((instance) => instance.id === targetId),
+              )}
+              onOptionSelect={(_, option) =>
+                setImportTargetId(option.optionValue ?? null)
               }
-            }}
-          >
-            导入到第一个实例
-          </Button>
+            >
+              {allInstances.map((instance) => (
+                <Option
+                  key={instance.id}
+                  value={instance.id}
+                  text={describeInstance(instance)}
+                >
+                  {describeInstance(instance)}
+                </Option>
+              ))}
+            </Dropdown>
+            <Button
+              appearance="primary"
+              icon={<ArrowUpload24Regular />}
+              disabled={!desktop || busy || targetId === null}
+              onClick={() => {
+                if (targetId) {
+                  handleImportClick(targetId);
+                }
+              }}
+            >
+              导入投影
+            </Button>
+          </div>
         }
       />
       <input
@@ -207,7 +359,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       />
 
       {!desktop ? (
-        <DesktopOnlyNotice body="浏览器预览读不到本机实例。用桌面版可以自动识别各实例里的投影图。" />
+        <DesktopOnlyNotice body="浏览器预览读不到本机实例。用桌面版可以自动识别各版本里的投影图。" />
       ) : null}
 
       {error ? (
@@ -221,6 +373,50 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         </MessageBar>
       ) : null}
 
+      {clipboard ? (
+        <section className="status-panel schematic-clipboard" aria-label="剪贴板">
+          <Text>
+            已{clipboard.move ? "剪切" : "复制"} {clipboard.paths.length} 个投影
+            {clipboard.paths.length === 1 ? `：${clipboard.paths[0]}` : ""}
+          </Text>
+          <Button size="small" disabled={busy} onClick={() => setClipboard(null)}>
+            取消
+          </Button>
+        </section>
+      ) : null}
+
+      {selection ? (
+        <section className="status-panel schematic-clipboard" aria-label="多选操作">
+          <Text>已选 {selection.paths.size} 项</Text>
+          <div className="toolbar-actions">
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => handleCopy(selection.instanceId, selectedPaths, false)}
+            >
+              复制
+            </Button>
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => handleCopy(selection.instanceId, selectedPaths, true)}
+            >
+              剪切
+            </Button>
+            <Button
+              size="small"
+              disabled={busy}
+              onClick={() => handleDelete(selection.instanceId, selectedPaths)}
+            >
+              删除
+            </Button>
+            <Button size="small" disabled={busy} onClick={() => setSelection(null)}>
+              取消选择
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       {!desktop ? null : status === "loading" ? (
         <ListSkeleton />
       ) : status === "error" ? (
@@ -232,49 +428,41 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       ) : listing.instances.length === 0 ? (
         <EmptyState
           icon={<Cube24Regular />}
-          title="还没有实例"
-          body="投影图跟着实例走：先到「实例」页创建或导入实例，再把 .litematic 放进它的 schematics 目录，或在下面导入。"
+          title="还没有版本带投影文件"
+          body="投影图跟着版本走：把 .litematic 放进某个版本游戏目录的 schematics 文件夹（可以带子文件夹），或用上面的「导入」按钮。没有 schematics 文件夹的版本不会出现在这里。"
         />
       ) : (
         <>
-          {listing.instances.length > 1 ? (
-            <section className="status-panel" aria-label="跨版本复制目标">
-              <div className="toolbar-actions">
-                <Text className="muted">复制目标实例</Text>
-                <Dropdown
-                  placeholder="选择目标实例（复制用）"
-                  value={
-                    listing.instances.find((instance) => instance.id === copyTargetId)
-                      ?.name ?? undefined
-                  }
-                  onOptionSelect={(_, option) =>
-                    setCopyTargetId(option.optionValue ?? null)
-                  }
-                >
-                  {listing.instances.map((instance) => (
-                    <Option
-                      key={instance.id}
-                      value={instance.id}
-                      text={`${instance.name}（${instance.version}）`}
-                    >
-                      {instance.name}（{instance.version}）
-                    </Option>
-                  ))}
-                </Dropdown>
-              </div>
-            </section>
-          ) : null}
-
-          {listing.instances.map((instance) => (
-            <InstanceGroup
+          {listing.instances.map((instance, index) => (
+            <VersionPanel
               key={instance.id}
               instance={instance}
+              tree={trees.get(instance.id)}
+              open={expandedVersions[instance.id] ?? index === 0}
               busy={busy}
-              copyReady={copyTargetId !== null}
-              onImport={handleImportClick}
-              onPreview={handlePreview}
-              onCopy={handleCopy}
-              onDelete={handleDelete}
+              clipboardReady={clipboard !== null}
+              selectionMode={selection?.instanceId === instance.id}
+              selected={
+                selection?.instanceId === instance.id ? selection.paths : EMPTY_SET
+              }
+              collapsedFolders={
+                collapsedByInstance.get(instance.id) ?? EMPTY_SET
+              }
+              onToggleVersion={() =>
+                setExpandedVersions((previous) => ({
+                  ...previous,
+                  [instance.id]: !(previous[instance.id] ?? index === 0),
+                }))
+              }
+              onImport={() => handleImportClick(instance.id)}
+              onPaste={(folder) => handlePaste(instance.id, folder)}
+              onToggleFolder={(path) => toggleFolder(instance.id, path)}
+              onToggleSelect={(path) => toggleSelect(instance.id, path)}
+              onStartSelection={(path) => startSelection(instance.id, path)}
+              onSelectAll={(paths) => selectAll(instance.id, paths)}
+              onPreview={(item) => handlePreview(instance.id, item)}
+              onCopy={(paths, move) => handleCopy(instance.id, paths, move)}
+              onDelete={(paths) => handleDelete(instance.id, paths)}
             />
           ))}
 
@@ -300,7 +488,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
           <p className="muted preview-note">
             此投影出自 MC {detail.metadata.createdForRelease ?? "未知版本"}
             （数据版本 {detail.metadata.minecraftDataVersion}）。复制到数据版本
-            不同的实例时，部分方块状态可能随版本变化，进游戏后请核对。
+            不同的版本时，部分方块状态可能随版本变化，进游戏后请核对。
           </p>
         </section>
       ) : null}
@@ -308,123 +496,118 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   );
 }
 
-type InstanceGroupProps = {
+type VersionPanelProps = {
   instance: InstanceSchematics;
+  tree: ReturnType<typeof buildSchematicTree> | undefined;
+  open: boolean;
   busy: boolean;
-  copyReady: boolean;
-  onImport: (instanceId: string) => void;
-  onPreview: (instanceId: string, item: SchematicSummary) => void;
-  onCopy: (instanceId: string, item: SchematicSummary) => void;
-  onDelete: (instanceId: string, item: SchematicSummary) => void;
+  clipboardReady: boolean;
+  selectionMode: boolean;
+  selected: ReadonlySet<string>;
+  collapsedFolders: ReadonlySet<string>;
+  onToggleVersion: () => void;
+  onImport: () => void;
+  onPaste: (folder: string) => void;
+  onToggleFolder: (path: string) => void;
+  onToggleSelect: (path: string) => void;
+  onStartSelection: (path: string) => void;
+  onSelectAll: (paths: string[]) => void;
+  onPreview: (item: SchematicSummary) => void;
+  onCopy: (paths: string[], move: boolean) => void;
+  onDelete: (paths: string[]) => void;
 };
 
-function InstanceGroup({
+function VersionPanel({
   instance,
+  tree,
+  open,
   busy,
-  copyReady,
+  clipboardReady,
+  selectionMode,
+  selected,
+  collapsedFolders,
+  onToggleVersion,
   onImport,
+  onPaste,
+  onToggleFolder,
+  onToggleSelect,
+  onStartSelection,
+  onSelectAll,
   onPreview,
   onCopy,
   onDelete,
-}: InstanceGroupProps) {
+}: VersionPanelProps) {
   return (
-    <section className="status-panel list-panel" aria-label={`实例 ${instance.name} 的投影图`}>
-      <div className="list-toolbar">
-        <div className="toolbar-heading">
-          <Text as="h2" size={400} weight="semibold">
-            {instance.name}
-          </Text>
+    <section className="status-panel schematic-version" aria-label={`版本 ${instance.name}`}>
+      <div className="schematic-version-header">
+        <button
+          type="button"
+          className="schematic-version-toggle"
+          aria-expanded={open}
+          aria-label={`${instance.name}（${instance.version}）`}
+          onClick={onToggleVersion}
+        >
+          <span className="schematic-version-name">{instance.name}</span>
           <Badge appearance="tint">{instance.version}</Badge>
           <Badge appearance="tint">{instance.schematics.length} 个投影</Badge>
-        </div>
+        </button>
         <div className="toolbar-actions">
+          <Button
+            size="small"
+            icon={<ClipboardPaste24Regular />}
+            disabled={busy || !clipboardReady}
+            onClick={() => onPaste("")}
+          >
+            粘贴到根目录
+          </Button>
           <Button
             size="small"
             icon={<ArrowUpload24Regular />}
             disabled={busy}
-            onClick={() => onImport(instance.id)}
+            onClick={onImport}
           >
-            导入到该实例
+            导入
           </Button>
         </div>
       </div>
 
-      {instance.schematics.length === 0 && instance.failed.length === 0 ? (
-        <Text className="muted" size={300}>
-          这个实例的 schematics 目录里还没有投影文件。
-        </Text>
-      ) : (
-        <ul className="schematic-list">
-          {instance.schematics.map((item) => (
-            <li key={item.fileName} className="schematic-row">
-              <div className="schematic-info">
-                <Text weight="semibold">{item.metadata.name || item.fileName}</Text>
-                <Text className="muted" size={300}>
-                  {item.fileName} · {formatBytes(item.sizeBytes)} ·{" "}
-                  {item.metadata.totalVolume.toLocaleString("zh-CN")} 格 ·{" "}
-                  {item.metadata.regionCount} 个区域
-                </Text>
-                <Text className="muted" size={300}>
-                  {describeOrigin(item)}
-                </Text>
-              </div>
-              <div className="schematic-actions">
-                <Button
-                  size="small"
-                  icon={<Eye24Regular />}
-                  disabled={busy}
-                  onClick={() => onPreview(instance.id, item)}
-                >
-                  预览
-                </Button>
-                <Button
-                  size="small"
-                  disabled={busy || !copyReady}
-                  onClick={() => onCopy(instance.id, item)}
-                >
-                  复制到目标实例
-                </Button>
-                <Button
-                  size="small"
-                  icon={<Delete24Regular />}
-                  disabled={busy}
-                  onClick={() => onDelete(instance.id, item)}
-                >
-                  删除
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      {open ? (
+        <div className="schematic-version-body">
+          {tree && instance.schematics.length > 0 ? (
+            <SchematicTree
+              root={tree}
+              busy={busy}
+              selectionMode={selectionMode}
+              selected={selected}
+              collapsedFolders={collapsedFolders}
+              clipboardReady={clipboardReady}
+              onToggleFolder={onToggleFolder}
+              onToggleSelect={onToggleSelect}
+              onPreview={onPreview}
+              onCopy={onCopy}
+              onPaste={onPaste}
+              onDelete={onDelete}
+              onStartSelection={onStartSelection}
+              onSelectAll={onSelectAll}
+            />
+          ) : (
+            <Text className="muted" size={300}>
+              这个版本的 schematics 目录里只有无法解析的文件。
+            </Text>
+          )}
 
-      {instance.failed.length > 0 ? (
-        <MessageBar intent="warning">
-          <MessageBarBody>
-            <Warning24Regular /> {instance.failed.length} 个文件无法解析：
-            {instance.failed.map((failed) => failed.fileName).join("、")}
-          </MessageBarBody>
-        </MessageBar>
+          {instance.failed.length > 0 ? (
+            <MessageBar intent="warning">
+              <MessageBarBody>
+                <Warning24Regular /> {instance.failed.length} 个文件无法解析：
+                {instance.failed.map((failed) => failed.relativePath).join("、")}
+              </MessageBarBody>
+            </MessageBar>
+          ) : null}
+        </div>
       ) : null}
     </section>
   );
-}
-
-function describeOrigin(item: SchematicSummary): string {
-  const release = item.metadata.createdForRelease;
-  return release
-    ? `出自 MC ${release}（数据版本 ${item.metadata.minecraftDataVersion}）`
-    : `数据版本 ${item.metadata.minecraftDataVersion}（早于记录表）`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} B`;
 }
 
 function describeError(error: unknown): string {
@@ -435,4 +618,9 @@ function describeError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+/** 下拉框里统一用「名字（版本）」；`value` 必须和 `Option` 的文本一致。 */
+function describeInstance(instance: InstanceSummary | undefined): string {
+  return instance ? `${instance.name}（${instance.version}）` : "";
 }

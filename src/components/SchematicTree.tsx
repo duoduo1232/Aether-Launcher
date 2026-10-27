@@ -1,0 +1,241 @@
+import {
+  Badge,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  Text,
+} from "@fluentui/react-components";
+import {
+  CheckboxChecked24Regular,
+  ChevronDown24Regular,
+  ChevronRight24Regular,
+  ClipboardPaste24Regular,
+  Copy24Regular,
+  Cut24Regular,
+  Delete24Regular,
+  Document24Regular,
+  Folder24Regular,
+  FolderOpen24Regular,
+} from "@fluentui/react-icons";
+import type { SchematicSummary } from "../ipc";
+import type { SchematicFolderNode } from "../lib/schematicTree";
+import { collectFilePaths } from "../lib/schematicTree";
+/**
+ * 一个版本的投影目录树。
+ *
+ * 文件夹结构来自后端返回的 `relativePath`：文件夹可折叠，文件行右键出菜单
+ * （复制 / 剪切 / 删除 / 多选），文件夹行右键可以「粘贴到此处」。多选模式下
+ * 每行前面出现复选框，右键操作作用于整个选择集。
+ */
+export type SchematicTreeProps = {
+  root: SchematicFolderNode;
+  busy: boolean;
+  selectionMode: boolean;
+  /** 已选中的相对路径（只属于当前实例）。 */
+  selected: ReadonlySet<string>;
+  /** 被用户折叠的文件夹路径；默认全部展开。 */
+  collapsedFolders: ReadonlySet<string>;
+  /** 剪贴板里有内容，可以粘贴。 */
+  clipboardReady: boolean;
+  onToggleFolder: (path: string) => void;
+  onToggleSelect: (path: string) => void;
+  onPreview: (item: SchematicSummary) => void;
+  onCopy: (paths: string[], move: boolean) => void;
+  onPaste: (folder: string) => void;
+  onDelete: (paths: string[]) => void;
+  onStartSelection: (path: string) => void;
+  onSelectAll: (paths: string[]) => void;
+};
+
+export function SchematicTree(props: SchematicTreeProps) {
+  return (
+    <div className="schematic-tree">
+      <FolderLevel node={props.root} depth={0} {...props} />
+    </div>
+  );
+}
+
+type FolderLevelProps = SchematicTreeProps & {
+  node: SchematicFolderNode;
+  depth: number;
+};
+
+function FolderLevel({ node, depth, ...props }: FolderLevelProps) {
+  return (
+    <ul className="schematic-branch">
+      {node.folders.map((folder) => (
+        <FolderBranch key={folder.path} node={folder} depth={depth} {...props} />
+      ))}
+      {node.files.map((file) => (
+        <FileRow key={file.relativePath} item={file} depth={depth} {...props} />
+      ))}
+    </ul>
+  );
+}
+
+type FolderBranchProps = SchematicTreeProps & {
+  node: SchematicFolderNode;
+  depth: number;
+};
+
+function FolderBranch({ node, depth, ...props }: FolderBranchProps) {
+  const open = !props.collapsedFolders.has(node.path);
+  const files = collectFilePaths(node);
+  return (
+    <li className="schematic-branch-item">
+      <Menu openOnContext>
+        <MenuTrigger disableButtonEnhancement>
+          <button
+            type="button"
+            className="schematic-folder"
+            style={{ paddingInlineStart: 8 + depth * 16 }}
+            aria-expanded={open}
+            aria-label={`文件夹 ${node.name}`}
+            onClick={() => props.onToggleFolder(node.path)}
+          >
+            {open ? <ChevronDown24Regular /> : <ChevronRight24Regular />}
+            {open ? <FolderOpen24Regular /> : <Folder24Regular />}
+            <span className="schematic-folder-name">{node.name}</span>
+            <Badge appearance="tint" size="small">
+              {node.total}
+            </Badge>
+          </button>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem
+              icon={<ClipboardPaste24Regular />}
+              disabled={!props.clipboardReady || props.busy}
+              onClick={() => props.onPaste(node.path)}
+            >
+              粘贴到此处
+            </MenuItem>
+            <MenuItem
+              icon={<CheckboxChecked24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onSelectAll(files)}
+            >
+              全选此文件夹（{files.length}）
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+      {open ? <FolderLevel node={node} depth={depth + 1} {...props} /> : null}
+    </li>
+  );
+}
+
+type FileRowProps = SchematicTreeProps & {
+  item: SchematicSummary;
+  depth: number;
+};
+
+function FileRow({ item, depth, ...props }: FileRowProps) {
+  const checked = props.selected.has(item.relativePath);
+  // 右键作用于整个选择集，除非点的文件不在选择集里。
+  const targets =
+    props.selectionMode && checked && props.selected.size > 0
+      ? [...props.selected]
+      : [item.relativePath];
+  return (
+    <li className="schematic-branch-item">
+      <Menu openOnContext>
+        <MenuTrigger disableButtonEnhancement>
+          <div
+            className={`schematic-row${checked ? " is-selected" : ""}`}
+            style={{ paddingInlineStart: 8 + depth * 16 }}
+            role="button"
+            tabIndex={0}
+            aria-label={item.metadata.name || item.fileName}
+            onClick={() =>
+              props.selectionMode
+                ? props.onToggleSelect(item.relativePath)
+                : props.onPreview(item)
+            }
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") {
+                return;
+              }
+              event.preventDefault();
+              if (props.selectionMode) {
+                props.onToggleSelect(item.relativePath);
+              } else {
+                props.onPreview(item);
+              }
+            }}
+          >
+            {props.selectionMode ? (
+              <input
+                type="checkbox"
+                className="schematic-check"
+                checked={checked}
+                aria-label={`选择 ${item.fileName}`}
+                onChange={() => props.onToggleSelect(item.relativePath)}
+                onClick={(event) => event.stopPropagation()}
+              />
+            ) : (
+              <Document24Regular />
+            )}
+            <div className="schematic-info">
+              <Text weight="semibold">{item.metadata.name || item.fileName}</Text>
+              <Text className="muted" size={200}>
+                {item.fileName} · {formatBytes(item.sizeBytes)} ·{" "}
+                {item.metadata.totalVolume.toLocaleString("zh-CN")} 格 ·{" "}
+                {describeOrigin(item)}
+              </Text>
+            </div>
+          </div>
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList>
+            <MenuItem
+              icon={<Copy24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onCopy(targets, false)}
+            >
+              复制{targets.length > 1 ? ` ${targets.length} 项` : ""}
+            </MenuItem>
+            <MenuItem
+              icon={<Cut24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onCopy(targets, true)}
+            >
+              剪切{targets.length > 1 ? ` ${targets.length} 项` : ""}
+            </MenuItem>
+            <MenuItem
+              icon={<Delete24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onDelete(targets)}
+            >
+              删除{targets.length > 1 ? ` ${targets.length} 项` : ""}
+            </MenuItem>
+            <MenuItem
+              icon={<CheckboxChecked24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onStartSelection(item.relativePath)}
+            >
+              多选
+            </MenuItem>
+          </MenuList>
+        </MenuPopover>
+      </Menu>
+    </li>
+  );
+}
+
+function describeOrigin(item: SchematicSummary): string {
+  const release = item.metadata.createdForRelease;
+  return release ? `MC ${release}` : `数据版本 ${item.metadata.minecraftDataVersion}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
