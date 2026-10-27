@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use aether_download::HashingWriter;
-use aether_download::transport::{TransportError, TransportResponse};
+use aether_download::transport::{TransportError, TransportRequest, TransportResponse};
 
 use super::*;
 

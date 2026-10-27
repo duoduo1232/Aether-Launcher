@@ -38,7 +38,7 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - Official-first mirror fallback: BMCLAPI URLs derived from Mojang endpoints are appended to download plans, and metadata fetches switch to the mirror on transport failures
 - Download engine option to reuse already-verified files instead of re-downloading them across shared versions
 - `aether-schematic` crate: minimal NBT reader and Litematica block-state decoding with preview size caps, plus a data-version-to-release table
-- Schematic management page: import into a launcher-managed directory, metadata listing that shows the originating Minecraft release, deletion, and per-instance copy for cross-version use
+- Schematic management that automatically discovers `.litematic` files in every instance's `schematics` directory and groups them per instance, with metadata showing the originating Minecraft release, import by content, deletion, and cross-instance copy for cross-version use
 - Rotatable 3D schematic preview rendered with three.js instanced meshes and lattice sampling above a block budget
 
 ### Security

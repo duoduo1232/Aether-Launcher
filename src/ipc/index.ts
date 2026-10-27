@@ -91,6 +91,7 @@ export {
 } from "./schematics";
 export type {
   FailedSchematic,
+  InstanceSchematics,
   SchematicDetail,
   SchematicListing,
   SchematicMetadata,

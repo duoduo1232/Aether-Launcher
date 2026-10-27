@@ -60,7 +60,7 @@ src/
 ## IPC 边界
 
 - 前端只通过 `src/ipc/` 调用后端，组件里不直接 `invoke`。
-- 命令在 `src-tauri/src/lib.rs` 里用 `#[tauri::command]` 定义，并列进 `generate_handler!`。当前命令：应用信息、Java 发现、版本目录与原版安装（`catalog` / `vanilla` / `install`）、实例（`instances`）、启动控制（`launch`），以及投影图管理（`schematics`：列表、读取、导入、删除、复制到实例）。
+- 命令在 `src-tauri/src/lib.rs` 里用 `#[tauri::command]` 定义，并列进 `generate_handler!`。当前命令：应用信息、Java 发现、版本目录与原版安装（`catalog` / `vanilla` / `install`）、实例（`instances`）、启动控制（`launch`），以及投影图管理（`schematics`：自动扫描每个实例 `schematics/` 目录并按实例分组返回，读取、导入、删除、跨实例复制都只收实例 ID 与裸文件名）。
 - 窗口权限在 `src-tauri/capabilities/default.json`，目前只有 `core:default`。这个目录在 CODEOWNERS 里单独列出。
 - 命令是窄化的领域操作（导入这个实例、启动这个实例），参数用类型表达。不提供执行任意命令、读写任意路径的入口。
 

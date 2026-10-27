@@ -8,6 +8,7 @@ function detailWith(
   indices: number[],
 ): SchematicDetail {
   return {
+    instanceId: "test-instance",
     fileName: "test.litematic",
     metadata: {
       name: "test",

@@ -30,11 +30,11 @@ import {
   emptySchematicListing,
   importSchematic,
   isTauri,
-  listInstances,
   listSchematics,
   readSchematic,
 } from "../ipc";
 import type {
+  InstanceSchematics,
   SchematicDetail,
   SchematicSummary,
 } from "../ipc";
@@ -48,39 +48,31 @@ type SchematicsPageProps = {
 /**
  * 投影图页。
  *
- * 受管理目录里的 `.litematic` 文件在这里列表、预览与管理：
- * - 导入：前端读文件内容传给后端（IPC 只传名字和字节，不传路径），单文件
- *   上限 16 MiB；更大的文件可以直接放进受管理目录后刷新；
+ * 后端自动扫描每个实例游戏目录下的 `schematics/`，这里按实例分组展示：
+ * - 导入：选一个实例后从文件读内容传给后端（IPC 只传实例 ID、名字和字节，
+ *   不传路径），单文件上限 16 MiB；
  * - 预览：后端完整解码后交给 three.js 做 3D 渲染，可旋转缩放；
- * - 复制到实例：把文件复制进实例的 `schematics/` 目录，跨版本使用时
- *   页面会提示方块状态可能随数据版本变化。
+ * - 跨版本：页顶选一个「复制目标实例」，把投影复制过去；数据版本不同时
+ *   预览面板会提示方块状态可能随版本变化。
  */
 export function SchematicsPage({ page }: SchematicsPageProps) {
   const desktop = isTauri();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [importError, setImportError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [importTargetId, setImportTargetId] = useState<string | null>(null);
+  const [copyTargetId, setCopyTargetId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SchematicDetail | null>(null);
   const [busy, setBusy] = useState(false);
-  const [targetInstanceId, setTargetInstanceId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const loadList = useCallback(async () => {
-    const result = await listSchematics();
-    return result;
-  }, []);
-
-  const loadInstances = useCallback(async () => {
-    const result = await listInstances();
-    return result;
-  }, []);
-
-  const { status, data, error, reload } = useQuery(loadList, desktop);
-  const instancesQuery = useQuery(loadInstances, desktop);
+  const loadList = useCallback(async () => listSchematics(), []);
+  const { status, data, error: listError, reload } = useQuery(loadList, desktop);
   const listing = data ?? emptySchematicListing;
-  const instances = instancesQuery.data?.instances ?? [];
 
-  const handleImportClick = useCallback(() => {
-    setImportError(null);
+  const handleImportClick = useCallback((instanceId: string) => {
+    setError(null);
+    setNotice(null);
+    setImportTargetId(instanceId);
     fileInputRef.current?.click();
   }, []);
 
@@ -88,64 +80,70 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       event.target.value = "";
-      if (!file) {
+      if (!file || !importTargetId) {
         return;
       }
-      setImportError(null);
+      setError(null);
       if (!file.name.endsWith(".litematic")) {
-        setImportError("只能导入 .litematic 文件");
+        setError("只能导入 .litematic 文件");
         return;
       }
       if (file.size > IMPORT_LIMIT_BYTES) {
-        setImportError(
-          `文件超过 16 MiB 导入上限。请把它直接放进受管理的投影图目录后刷新。`,
-        );
+        setError("文件超过 16 MiB 导入上限。请把它直接放进该实例的 schematics 目录后刷新。");
         return;
       }
       setBusy(true);
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        await importSchematic(file.name, bytes);
+        await importSchematic(importTargetId, file.name, bytes);
+        setNotice(`已导入 ${file.name}`);
         reload();
       } catch (caught) {
-        setImportError(describeError(caught));
+        setError(describeError(caught));
       } finally {
         setBusy(false);
       }
     },
-    [reload],
+    [importTargetId, reload],
   );
 
-  const handlePreview = useCallback(async (item: SchematicSummary) => {
-    setActionError(null);
-    setBusy(true);
-    try {
-      const loaded = await readSchematic(item.fileName);
-      setDetail(loaded);
-    } catch (caught) {
-      setDetail(null);
-      setActionError(describeError(caught));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const handlePreview = useCallback(
+    async (instanceId: string, item: SchematicSummary) => {
+      setError(null);
+      setBusy(true);
+      try {
+        const loaded = await readSchematic(instanceId, item.fileName);
+        setDetail(loaded);
+      } catch (caught) {
+        setDetail(null);
+        setError(describeError(caught));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
 
   const handleDelete = useCallback(
-    async (item: SchematicSummary) => {
+    async (instanceId: string, item: SchematicSummary) => {
       if (!window.confirm(`确定删除「${item.fileName}」吗？此操作无法撤销。`)) {
         return;
       }
-      setActionError(null);
+      setError(null);
+      setNotice(null);
       setBusy(true);
       try {
-        await deleteSchematic(item.fileName);
-        // 函数式更新：被删的就是当前预览时才收起，不把 detail 拉进依赖。
+        await deleteSchematic(instanceId, item.fileName);
+        // 函数式更新：被删的就是当前预览时才收起。
         setDetail((previous) =>
-          previous?.fileName === item.fileName ? null : previous,
+          previous?.instanceId === instanceId && previous?.fileName === item.fileName
+            ? null
+            : previous,
         );
+        setNotice(`已删除 ${item.fileName}`);
         reload();
       } catch (caught) {
-        setActionError(describeError(caught));
+        setError(describeError(caught));
       } finally {
         setBusy(false);
       }
@@ -154,24 +152,30 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   );
 
   const handleCopy = useCallback(
-    async (item: SchematicSummary) => {
-      if (!targetInstanceId) {
-        setActionError("先选择要复制到的实例。");
+    async (fromInstanceId: string, item: SchematicSummary) => {
+      if (!copyTargetId) {
+        setError("先在页顶选择要复制到的目标实例。");
         return;
       }
-      setActionError(null);
+      if (copyTargetId === fromInstanceId) {
+        setError("源实例和目标实例是同一个。");
+        return;
+      }
+      setError(null);
+      setNotice(null);
       setBusy(true);
       try {
-        await copySchematicToInstance(item.fileName, targetInstanceId);
-        setActionError(null);
-        window.alert("已复制到实例的 schematics 目录。");
+        await copySchematicToInstance(fromInstanceId, copyTargetId, item.fileName);
+        const target = listing.instances.find((instance) => instance.id === copyTargetId);
+        setNotice(`已复制到「${target?.name ?? copyTargetId}」`);
+        reload();
       } catch (caught) {
-        setActionError(describeError(caught));
+        setError(describeError(caught));
       } finally {
         setBusy(false);
       }
     },
-    [targetInstanceId],
+    [copyTargetId, listing.instances, reload],
   );
 
   return (
@@ -183,10 +187,14 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
           <Button
             appearance="primary"
             icon={<ArrowUpload24Regular />}
-            disabled={!desktop || busy}
-            onClick={handleImportClick}
+            disabled={!desktop || busy || listing.instances.length === 0}
+            onClick={() => {
+              if (listing.instances.length > 0) {
+                handleImportClick(listing.instances[0].id);
+              }
+            }}
           >
-            导入投影图
+            导入到第一个实例
           </Button>
         }
       />
@@ -199,121 +207,84 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       />
 
       {!desktop ? (
-        <DesktopOnlyNotice body="浏览器预览读不到本机投影图。用桌面版可以导入、预览和管理 .litematic 文件。" />
+        <DesktopOnlyNotice body="浏览器预览读不到本机实例。用桌面版可以自动识别各实例里的投影图。" />
       ) : null}
 
-      {importError ? (
-        <MessageBar intent="warning">
-          <MessageBarBody>{importError}</MessageBarBody>
-        </MessageBar>
-      ) : null}
-      {actionError ? (
+      {error ? (
         <MessageBar intent="error">
-          <MessageBarBody>{actionError}</MessageBarBody>
+          <MessageBarBody>{error}</MessageBarBody>
+        </MessageBar>
+      ) : null}
+      {notice ? (
+        <MessageBar intent="success">
+          <MessageBarBody>{notice}</MessageBarBody>
         </MessageBar>
       ) : null}
 
-      <section className="status-panel list-panel" aria-labelledby="schematics-heading">
-        <div className="list-toolbar">
-          <div className="toolbar-heading">
-            <Text id="schematics-heading" as="h2" size={400} weight="semibold">
-              受管理的投影图
-            </Text>
-            {desktop ? (
-              <Badge appearance="tint">{listing.schematics.length} 个文件</Badge>
-            ) : null}
-          </div>
-          {desktop && instances.length > 0 ? (
-            <div className="toolbar-actions">
-              <Text className="muted">复制到实例</Text>
-              <Dropdown
-                placeholder="选择实例"
-                value={
-                  instances.find((instance) => instance.id === targetInstanceId)
-                    ?.name ?? undefined
-                }
-                onOptionSelect={(_, option) =>
-                  setTargetInstanceId(option.optionValue ?? null)
-                }
-              >
-                {instances.map((instance) => (
-                  <Option key={instance.id} value={instance.id} text={instance.name}>
-                    {instance.name}（{instance.version}）
-                  </Option>
-                ))}
-              </Dropdown>
-            </div>
+      {!desktop ? null : status === "loading" ? (
+        <ListSkeleton />
+      ) : status === "error" ? (
+        <ErrorState
+          title="投影图扫描失败"
+          message={listError ?? "未知错误"}
+          onRetry={reload}
+        />
+      ) : listing.instances.length === 0 ? (
+        <EmptyState
+          icon={<Cube24Regular />}
+          title="还没有实例"
+          body="投影图跟着实例走：先到「实例」页创建或导入实例，再把 .litematic 放进它的 schematics 目录，或在下面导入。"
+        />
+      ) : (
+        <>
+          {listing.instances.length > 1 ? (
+            <section className="status-panel" aria-label="跨版本复制目标">
+              <div className="toolbar-actions">
+                <Text className="muted">复制目标实例</Text>
+                <Dropdown
+                  placeholder="选择目标实例（复制用）"
+                  value={
+                    listing.instances.find((instance) => instance.id === copyTargetId)
+                      ?.name ?? undefined
+                  }
+                  onOptionSelect={(_, option) =>
+                    setCopyTargetId(option.optionValue ?? null)
+                  }
+                >
+                  {listing.instances.map((instance) => (
+                    <Option
+                      key={instance.id}
+                      value={instance.id}
+                      text={`${instance.name}（${instance.version}）`}
+                    >
+                      {instance.name}（{instance.version}）
+                    </Option>
+                  ))}
+                </Dropdown>
+              </div>
+            </section>
           ) : null}
-        </div>
 
-        {!desktop ? null : status === "loading" ? (
-          <ListSkeleton />
-        ) : status === "error" ? (
-          <ErrorState
-            title="投影图列表读取失败"
-            message={error ?? "未知错误"}
-            onRetry={reload}
-          />
-        ) : listing.schematics.length === 0 && listing.failed.length === 0 ? (
-          <EmptyState
-            icon={<Cube24Regular />}
-            title="还没有投影图"
-            body="点右上角导入 .litematic 文件，或把文件直接放进受管理的投影图目录。"
-          />
-        ) : (
-          <ul className="schematic-list">
-            {listing.schematics.map((item) => (
-              <li key={item.fileName} className="schematic-row">
-                <div className="schematic-info">
-                  <Text weight="semibold">{item.metadata.name || item.fileName}</Text>
-                  <Text className="muted" size={300}>
-                    {item.fileName} · {formatBytes(item.sizeBytes)} ·{" "}
-                    {item.metadata.totalVolume.toLocaleString("zh-CN")} 格 ·{" "}
-                    {item.metadata.regionCount} 个区域
-                  </Text>
-                  <Text className="muted" size={300}>
-                    {describeOrigin(item)}
-                  </Text>
-                </div>
-                <div className="schematic-actions">
-                  <Button
-                    size="small"
-                    icon={<Eye24Regular />}
-                    disabled={busy}
-                    onClick={() => void handlePreview(item)}
-                  >
-                    预览
-                  </Button>
-                  <Button
-                    size="small"
-                    disabled={busy || !targetInstanceId}
-                    onClick={() => void handleCopy(item)}
-                  >
-                    复制到实例
-                  </Button>
-                  <Button
-                    size="small"
-                    icon={<Delete24Regular />}
-                    disabled={busy}
-                    onClick={() => void handleDelete(item)}
-                  >
-                    删除
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+          {listing.instances.map((instance) => (
+            <InstanceGroup
+              key={instance.id}
+              instance={instance}
+              busy={busy}
+              copyReady={copyTargetId !== null}
+              onImport={handleImportClick}
+              onPreview={handlePreview}
+              onCopy={handleCopy}
+              onDelete={handleDelete}
+            />
+          ))}
 
-        {listing.failed.length > 0 ? (
-          <MessageBar intent="warning">
-            <MessageBarBody>
-              <Warning24Regular /> {listing.failed.length} 个文件无法解析：
-              {listing.failed.map((failed) => failed.fileName).join("、")}
-            </MessageBarBody>
-          </MessageBar>
-        ) : null}
-      </section>
+          {listing.skipped.length > 0 ? (
+            <Text className="muted" size={300}>
+              另有 {listing.skipped.length} 个无法读取的实例记录被跳过。
+            </Text>
+          ) : null}
+        </>
+      )}
 
       {detail ? (
         <section className="status-panel preview-panel" aria-label="3D 预览">
@@ -334,6 +305,108 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         </section>
       ) : null}
     </>
+  );
+}
+
+type InstanceGroupProps = {
+  instance: InstanceSchematics;
+  busy: boolean;
+  copyReady: boolean;
+  onImport: (instanceId: string) => void;
+  onPreview: (instanceId: string, item: SchematicSummary) => void;
+  onCopy: (instanceId: string, item: SchematicSummary) => void;
+  onDelete: (instanceId: string, item: SchematicSummary) => void;
+};
+
+function InstanceGroup({
+  instance,
+  busy,
+  copyReady,
+  onImport,
+  onPreview,
+  onCopy,
+  onDelete,
+}: InstanceGroupProps) {
+  return (
+    <section className="status-panel list-panel" aria-label={`实例 ${instance.name} 的投影图`}>
+      <div className="list-toolbar">
+        <div className="toolbar-heading">
+          <Text as="h2" size={400} weight="semibold">
+            {instance.name}
+          </Text>
+          <Badge appearance="tint">{instance.version}</Badge>
+          <Badge appearance="tint">{instance.schematics.length} 个投影</Badge>
+        </div>
+        <div className="toolbar-actions">
+          <Button
+            size="small"
+            icon={<ArrowUpload24Regular />}
+            disabled={busy}
+            onClick={() => onImport(instance.id)}
+          >
+            导入到该实例
+          </Button>
+        </div>
+      </div>
+
+      {instance.schematics.length === 0 && instance.failed.length === 0 ? (
+        <Text className="muted" size={300}>
+          这个实例的 schematics 目录里还没有投影文件。
+        </Text>
+      ) : (
+        <ul className="schematic-list">
+          {instance.schematics.map((item) => (
+            <li key={item.fileName} className="schematic-row">
+              <div className="schematic-info">
+                <Text weight="semibold">{item.metadata.name || item.fileName}</Text>
+                <Text className="muted" size={300}>
+                  {item.fileName} · {formatBytes(item.sizeBytes)} ·{" "}
+                  {item.metadata.totalVolume.toLocaleString("zh-CN")} 格 ·{" "}
+                  {item.metadata.regionCount} 个区域
+                </Text>
+                <Text className="muted" size={300}>
+                  {describeOrigin(item)}
+                </Text>
+              </div>
+              <div className="schematic-actions">
+                <Button
+                  size="small"
+                  icon={<Eye24Regular />}
+                  disabled={busy}
+                  onClick={() => onPreview(instance.id, item)}
+                >
+                  预览
+                </Button>
+                <Button
+                  size="small"
+                  disabled={busy || !copyReady}
+                  onClick={() => onCopy(instance.id, item)}
+                >
+                  复制到目标实例
+                </Button>
+                <Button
+                  size="small"
+                  icon={<Delete24Regular />}
+                  disabled={busy}
+                  onClick={() => onDelete(instance.id, item)}
+                >
+                  删除
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {instance.failed.length > 0 ? (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            <Warning24Regular /> {instance.failed.length} 个文件无法解析：
+            {instance.failed.map((failed) => failed.fileName).join("、")}
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
+    </section>
   );
 }
 
