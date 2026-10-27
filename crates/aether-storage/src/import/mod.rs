@@ -46,6 +46,7 @@ use thiserror::Error;
 
 pub mod bakaxl;
 pub mod execute;
+pub mod fallback;
 pub mod hmcl;
 pub mod pcl2;
 pub mod prism;

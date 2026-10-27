@@ -41,13 +41,14 @@ fn instance_store_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base)
 }
 
-/// The game directory of one instance: the real `.minecraft` its record points at.
+/// The game directory of one instance: the real `.minecraft` it plays in.
 ///
 /// It is resolved from the instance record, never from IPC, so the frontend cannot
 /// redirect a launch at an arbitrary folder. Old records without the field fall
-/// back to `<instance root>/minecraft`, which is where they were created.
+/// back to looking up the `.minecraft` that actually contains the instance's
+/// version — the same rule schematic discovery uses, so both agree.
 fn instance_game_directory(instance: &aether_core::GameInstance) -> Result<PathBuf, String> {
-    let path = instance.effective_game_directory();
+    let path = super::schematics::resolve_game_directory(instance);
     if !path.join("versions").is_dir() {
         return Err(format!(
             "this instance's game directory has no versions folder: {}",

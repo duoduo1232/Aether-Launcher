@@ -145,7 +145,7 @@ pub async fn install_vanilla_client_libraries(
             .map_err(|error| error.to_string())?
             .load(instance_id)
             .map_err(|error| error.to_string())?;
-        let game_root = instance.effective_game_directory();
+        let game_root = super::schematics::resolve_game_directory(&instance);
         if !game_root.is_dir() {
             return Err(format!(
                 "the instance's game directory is missing: {}",

@@ -83,4 +83,5 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 ### Fixed
 
 - Importing a version whose `versions/<id>/<id>.json` already exists used to skip silently. It is now reported as `DuplicateName` so the UI can say the version is already installed; the existing file is still never overwritten. A parent version that is already present (the vanilla JSON in a shared `.minecraft`) is not treated as a conflict.
+- Existing instances created before `game_directory` existed kept an empty `minecraft/` folder, so they showed none of the schematics that were really on disk. `locate_game_directory_for_version` now finds the `.minecraft` that actually contains the instance's version — using launcher configuration as a hint and requiring the version folder to exist — and schematic discovery, launch and download all resolve through the same function. The lookup is read-only and never rewrites the user's record.
 - The launch coordinator registry is keyed by game directory, so instances bound to different `.minecraft` folders no longer share one coordinator and stopping a game scans the game directories that were actually started.

@@ -221,6 +221,21 @@ fn push_unique(directories: &mut Vec<PathBuf>, path: PathBuf) {
     directories.push(path);
 }
 
+/// 从一个 PCL2 启动器目录里读出的游戏目录。
+///
+/// 找不到配置、或配置里没记游戏目录时返回空列表。这只是个提示：调用方仍要
+/// 用 [`crate::import::fallback::has_version`] 确认该目录里真有想找的版本。
+#[must_use]
+pub fn configured_game_directories_for_launcher(launcher_root: &Path) -> Vec<PathBuf> {
+    let Some(config) = locate_config(launcher_root) else {
+        return Vec::new();
+    };
+    configured_game_directories(&config.pairs, &config.launcher_root)
+        .into_iter()
+        .filter(|directory| directory.is_dir())
+        .collect()
+}
+
 /// A PCL2 configuration file and the folder `$` in it refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pcl2Config {

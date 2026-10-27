@@ -292,10 +292,71 @@ const ORIGIN_INSTANCE: &str = "instance";
 const ORIGIN_GAME: &str = "game";
 const ORIGIN_VERSION: &str = "version";
 
+/// 解析一个实例真正使用的游戏目录。
+///
+/// 新记录的 `game_directory` 直接用。老记录（这个字段加入之前创建的实例）里
+/// 没有游戏目录，只有一个空的 `minecraft/`，所以按**版本名反查**：找到
+/// `versions/<该实例的版本>/` 真正存在的那个目录。
+///
+/// 反查结果只用于本次读取，**不写进记录** —— 那是用户的文件，不该被一个猜测
+/// 改写。找不到时退回旧路径，行为与改动前一致。
+pub(super) fn resolve_game_directory(instance: &GameInstance) -> PathBuf {
+    if instance.game_directory.is_some() {
+        return instance.effective_game_directory();
+    }
+
+    let version = instance.version.as_str();
+    let hints = launcher_game_directory_hints();
+    if let Some(found) = aether_storage::import::fallback::locate_game_directory_for_version(
+        version,
+        &hints,
+        &search_roots(),
+    ) {
+        return found;
+    }
+
+    instance.effective_game_directory()
+}
+
+/// 启动器配置里记录的游戏目录（PCL2 的 `LaunchFolderSelect` 等），只当提示用。
+fn launcher_game_directory_hints() -> Vec<PathBuf> {
+    aether_storage::import::fallback::configured_game_directories(&pcl2_launcher_roots())
+}
+
+/// 可能装着 PCL2 配置的目录，按常见位置排列。
+fn pcl2_launcher_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for variable in ["APPDATA", "USERPROFILE", "LOCALAPPDATA"] {
+        let Ok(base) = std::env::var(variable) else {
+            continue;
+        };
+        let base = PathBuf::from(base);
+        for relative in ["PCL", "Desktop/PCL", "Desktop/启动器/PCL"] {
+            roots.push(
+                relative
+                    .split('/')
+                    .fold(base.clone(), |path, part| path.join(part)),
+            );
+        }
+    }
+    roots
+}
+
+/// 反查的搜索起点：用户目录本身。候选目录由 `fallback` 追加常见相对路径。
+fn search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for variable in ["USERPROFILE", "APPDATA"] {
+        if let Ok(base) = std::env::var(variable) {
+            roots.push(PathBuf::from(base));
+        }
+    }
+    roots
+}
+
 /// 收集一个实例要扫描的全部来源，按优先级从高到低。
 ///
-/// `instance.root` 是受信任的实例存储路径，`instance.minecraft_root` 是它使用的
-/// 游戏目录（可能被共享、也可能是外部目录），前端从不参与。
+/// 游戏目录来自实例记录（新记录）或按版本名反查（老记录）；两者都只给出
+/// 用户自己的 `.minecraft`，前端从不参与。
 fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
     let mut sources = vec![ScanSource {
         directory: instance.root.join("schematics"),
@@ -304,7 +365,7 @@ fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
     }];
 
     // 游戏目录就是实例记录的 `.minecraft`：原地读，不复制。
-    let game_root = instance.effective_game_directory();
+    let game_root = resolve_game_directory(instance);
     let shared = game_root.join("schematics");
     if !sources.iter().any(|source| source.directory == shared) {
         sources.push(ScanSource {
