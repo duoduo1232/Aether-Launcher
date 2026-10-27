@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use aether_core::{GameInstance, InstanceId, InstanceState, VersionId};
 
 use super::{
-    MAX_RELATIVE_DEPTH, scan_schematics, schematic_path, unique_destination, validate_folder_path,
-    validate_relative_path,
+    MAX_RELATIVE_DEPTH, MAX_SCAN_ENTRIES, collect_litematics, copy_one_schematic, scan_schematics,
+    schematic_path, unique_destination, validate_folder_path, validate_relative_path,
 };
 
 #[test]
@@ -200,4 +200,89 @@ fn unique_destination_renames_instead_of_overwriting() {
     );
 
     fs::remove_dir_all(directory).expect("cleanup");
+}
+
+#[test]
+fn collect_litematics_keeps_subfolders_and_skips_other_files() {
+    let root = temp_root("collect");
+    fs::create_dir_all(root.join("城堡/一层")).expect("mkdir");
+    fs::write(root.join("a.litematic"), b"x").expect("write");
+    fs::write(root.join("城堡/主楼.litematic"), b"x").expect("write");
+    fs::write(root.join("城堡/一层/塔.litematic"), b"x").expect("write");
+    fs::write(root.join("notes.txt"), b"x").expect("write");
+    fs::write(root.join("城堡/readme.md"), b"x").expect("write");
+
+    let mut files = Vec::new();
+    let mut budget = MAX_SCAN_ENTRIES;
+    collect_litematics(&root, "", 0, &mut files, &mut budget);
+    files.sort();
+
+    assert_eq!(
+        files,
+        vec![
+            "a.litematic".to_owned(),
+            "城堡/一层/塔.litematic".to_owned(),
+            "城堡/主楼.litematic".to_owned(),
+        ]
+    );
+
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn collect_litematics_stops_at_the_depth_limit() {
+    let root = temp_root("collect-depth");
+    let mut deep = root.clone();
+    for index in 0..(MAX_RELATIVE_DEPTH + 2) {
+        deep = deep.join(format!("d{index}"));
+    }
+    fs::create_dir_all(&deep).expect("mkdir");
+    fs::write(deep.join("deep.litematic"), b"x").expect("write");
+
+    let mut files = Vec::new();
+    let mut budget = MAX_SCAN_ENTRIES;
+    collect_litematics(&root, "", 0, &mut files, &mut budget);
+
+    assert!(
+        files.is_empty(),
+        "past the depth limit nothing is collected"
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn copy_one_schematic_refuses_a_path_that_escapes() {
+    let source = temp_root("copy-escape");
+    let destination = temp_root("copy-escape-dest");
+    fs::create_dir_all(&source).expect("mkdir");
+    fs::create_dir_all(&destination).expect("mkdir");
+
+    assert_eq!(
+        copy_one_schematic(&source, &destination, "../evil.litematic"),
+        Err("unsafe-relative-path")
+    );
+
+    fs::remove_dir_all(source).expect("cleanup");
+    fs::remove_dir_all(destination).expect("cleanup");
+}
+
+#[test]
+fn copy_one_schematic_rejects_a_file_that_is_not_a_litematic() {
+    let source = temp_root("copy-broken");
+    let destination = temp_root("copy-broken-dest");
+    fs::create_dir_all(&source).expect("mkdir");
+    fs::create_dir_all(&destination).expect("mkdir");
+    fs::write(source.join("broken.litematic"), b"not gzip").expect("write");
+
+    assert_eq!(
+        copy_one_schematic(&source, &destination, "broken.litematic"),
+        Err("unparseable")
+    );
+    assert!(
+        !destination.join("broken.litematic").exists(),
+        "a rejected file must not be published"
+    );
+
+    fs::remove_dir_all(source).expect("cleanup");
+    fs::remove_dir_all(destination).expect("cleanup");
 }

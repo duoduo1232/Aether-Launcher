@@ -49,6 +49,17 @@ impl RootBuilder {
         });
     }
 
+    /// 列表头：元素类型 + 长度。元素本身只写负载——没有类型字节也没有名字，
+    /// 复合元素直接写字段再用 `end_compound()` 收尾。
+    fn begin_list(&mut self, name: &str, element_tag: u8, len: usize) {
+        self.out.push(9);
+        self.out
+            .extend_from_slice(&(name.len() as u16).to_be_bytes());
+        self.out.extend_from_slice(name.as_bytes());
+        self.out.push(element_tag);
+        self.out.extend_from_slice(&(len as i32).to_be_bytes());
+    }
+
     fn end_compound(&mut self) {
         self.out.push(0);
     }
@@ -158,25 +169,32 @@ fn decode_rejects_wrong_length_and_out_of_range_index() {
 // ---------------------------------------------------------------------------
 
 /// 构造一个 2×2×2、两色调色板（空气/石头）的最小投影文件。
-fn minimal_litematic(total_volume: i64, region_size: (i32, i32, i32)) -> Vec<u8> {
+///
+/// 布局与 Litematica 真正写出的文件一致：`Metadata` 是根下的复合，
+/// `TotalBlocks` / `TotalVolume` 是 `TAG_Int`，区域调色板是
+/// `BlockStatePalette` 列表（元素为带 `Name` 的复合）。
+fn minimal_litematic(total_volume: i32, region_size: (i32, i32, i32)) -> Vec<u8> {
     // 2 项调色板 → 2 位；8 个方块 = 16 位 = 1 个 long 的一半。
     let blocks: Vec<u64> = vec![1, 0, 1, 1, 0, 0, 1, 1];
     let longs = encode_litematica_bits(&blocks, 2);
 
     let mut root = RootBuilder::new();
     root.int("Version", 6);
+    root.int("SubVersion", 1);
     root.int("MinecraftDataVersion", 3955);
+    root.begin_compound("Metadata");
     root.string("Name", "测试投影");
     root.string("Author", "tester");
     root.string("Description", "fixture");
     root.int("RegionCount", 1);
-    root.long("TotalBlocks", 5);
-    root.long("TotalVolume", total_volume);
+    root.int("TotalBlocks", 5);
+    root.int("TotalVolume", total_volume);
     root.begin_compound("EnclosingSize");
     root.int("x", region_size.0);
     root.int("y", region_size.1);
     root.int("z", region_size.2);
     root.end_compound();
+    root.end_compound(); // Metadata
     root.begin_compound("Regions");
     root.begin_compound("main");
     root.begin_compound("Position");
@@ -189,11 +207,15 @@ fn minimal_litematic(total_volume: i64, region_size: (i32, i32, i32)) -> Vec<u8>
     root.int("y", region_size.1);
     root.int("z", region_size.2);
     root.end_compound();
-    root.begin_compound("Palette");
-    root.int("minecraft:air", 0);
-    root.int("minecraft:stone", 1);
+    // 列表元素只有负载：没有类型字节，也没有名字，复合元素以 0 结束。
+    root.begin_list("BlockStatePalette", 10, 2);
+    root.string("Name", "minecraft:air");
     root.end_compound();
-    root.int("PaletteSize", 2);
+    root.string("Name", "minecraft:stone");
+    root.begin_compound("Properties");
+    root.string("variant", "smooth");
+    root.end_compound();
+    root.end_compound();
     root.long_array("BlockStates", &longs);
     root.end_compound(); // main
     root.end_compound(); // Regions
@@ -226,19 +248,43 @@ fn parses_metadata_and_region_blocks() {
 }
 
 #[test]
+fn long_counts_are_accepted_too() {
+    // 计数语义上不限定整型宽度：`TAG_Int` 和 `TAG_Long` 都要认。
+    let mut root = RootBuilder::new();
+    root.int("Version", 6);
+    root.int("MinecraftDataVersion", 3955);
+    root.begin_compound("Metadata");
+    root.int("RegionCount", 0);
+    root.long("TotalBlocks", 7);
+    root.long("TotalVolume", 9);
+    root.begin_compound("EnclosingSize");
+    root.int("x", 1);
+    root.int("y", 1);
+    root.int("z", 1);
+    root.end_compound();
+    root.end_compound(); // Metadata
+
+    let metadata = read_metadata(&root.gzip()).expect("metadata");
+    assert_eq!(metadata.total_blocks, 7);
+    assert_eq!(metadata.total_volume, 9);
+}
+
+#[test]
 fn metadata_read_does_not_require_block_states() {
     // 构造一个 BlockStates 长度错误的文件：读元数据应成功，完整解析应失败。
     let mut root = RootBuilder::new();
     root.int("Version", 6);
     root.int("MinecraftDataVersion", 3955);
+    root.begin_compound("Metadata");
     root.int("RegionCount", 1);
-    root.long("TotalBlocks", 0);
-    root.long("TotalVolume", 8);
+    root.int("TotalBlocks", 0);
+    root.int("TotalVolume", 8);
     root.begin_compound("EnclosingSize");
     root.int("x", 2);
     root.int("y", 2);
     root.int("z", 2);
     root.end_compound();
+    root.end_compound(); // Metadata
     root.begin_compound("Regions");
     root.begin_compound("main");
     root.begin_compound("Position");
@@ -251,8 +297,9 @@ fn metadata_read_does_not_require_block_states() {
     root.int("y", 2);
     root.int("z", 2);
     root.end_compound();
-    root.begin_compound("Palette");
-    root.int("minecraft:air", 0);
+    root.begin_list("BlockStatePalette", 10, 1);
+    root.string("Name", "minecraft:air");
+    root.string("Name", "minecraft:air");
     root.end_compound();
     root.long_array("BlockStates", &[]); // 需要 1 个 long，给了 0 个
     root.end_compound(); // main
@@ -275,10 +322,22 @@ fn negative_region_size_uses_absolute_value() {
 
 #[test]
 fn oversize_total_volume_is_rejected_before_decoding() {
-    let bytes = minimal_litematic(MAX_REGION_VOLUME + 1, (2, 2, 2));
+    let bytes = minimal_litematic((MAX_REGION_VOLUME + 1) as i32, (2, 2, 2));
     assert!(matches!(
         parse(&bytes),
         Err(SchematicError::TotalTooLarge(volume)) if volume == MAX_REGION_VOLUME + 1
+    ));
+}
+
+#[test]
+fn missing_metadata_is_reported() {
+    let mut root = RootBuilder::new();
+    root.int("Version", 6);
+    root.int("MinecraftDataVersion", 3955);
+    let gzip = root.gzip();
+    assert!(matches!(
+        read_metadata(&gzip),
+        Err(SchematicError::MissingField("Metadata"))
     ));
 }
 
@@ -287,6 +346,16 @@ fn missing_required_field_is_reported() {
     let mut root = RootBuilder::new();
     root.int("Version", 6);
     // 缺 MinecraftDataVersion。
+    root.begin_compound("Metadata");
+    root.int("RegionCount", 0);
+    root.int("TotalBlocks", 0);
+    root.int("TotalVolume", 0);
+    root.begin_compound("EnclosingSize");
+    root.int("x", 0);
+    root.int("y", 0);
+    root.int("z", 0);
+    root.end_compound();
+    root.end_compound(); // Metadata
     let gzip = root.gzip();
     assert!(matches!(
         read_metadata(&gzip),

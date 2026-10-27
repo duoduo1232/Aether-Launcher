@@ -103,15 +103,15 @@ fn int_field(compound: &Value, name: &'static str) -> Result<i32, SchematicError
         })
 }
 
-fn long_field(compound: &Value, name: &'static str) -> Result<i64, SchematicError> {
-    compound
-        .get(name)
-        .and_then(Value::as_long)
-        .ok_or(if compound.get(name).is_some() {
-            SchematicError::WrongFieldType(name)
-        } else {
-            SchematicError::MissingField(name)
-        })
+/// 计数类字段：真实文件里 `TotalBlocks` / `TotalVolume` 是 `TAG_Int`，但语义是
+/// 方块计数，所以两种整型都接受，避免因为写入方的选择而拒绝整个文件。
+fn count_field(compound: &Value, name: &'static str) -> Result<i64, SchematicError> {
+    match compound.get(name) {
+        Some(Value::Int(value)) => Ok(i64::from(*value)),
+        Some(Value::Long(value)) => Ok(*value),
+        Some(_) => Err(SchematicError::WrongFieldType(name)),
+        None => Err(SchematicError::MissingField(name)),
+    }
 }
 
 fn string_field(compound: &Value, name: &'static str) -> Result<String, SchematicError> {
@@ -133,17 +133,25 @@ fn vec3_field(compound: &Value, name: &'static str) -> Result<[i32; 3], Schemati
     ])
 }
 
+/// Litematica 把名称、作者、区域计数这些放在根下的 `Metadata` 复合里，
+/// 只有 `Version` 和 `MinecraftDataVersion` 留在根上。
 fn metadata_from_root(root: &Value) -> Result<LitematicMetadata, SchematicError> {
+    let metadata = match root.get("Metadata") {
+        Some(metadata @ Value::Compound(_)) => metadata,
+        Some(_) => return Err(SchematicError::WrongFieldType("Metadata")),
+        None => return Err(SchematicError::MissingField("Metadata")),
+    };
+
     Ok(LitematicMetadata {
-        name: string_field(root, "Name")?,
-        author: string_field(root, "Author")?,
-        description: string_field(root, "Description")?,
+        name: string_field(metadata, "Name")?,
+        author: string_field(metadata, "Author")?,
+        description: string_field(metadata, "Description")?,
         format_version: int_field(root, "Version")?,
         minecraft_data_version: int_field(root, "MinecraftDataVersion")?,
-        region_count: int_field(root, "RegionCount")?,
-        total_blocks: long_field(root, "TotalBlocks")?,
-        total_volume: long_field(root, "TotalVolume")?,
-        enclosing_size: vec3_field(root, "EnclosingSize")?,
+        region_count: int_field(metadata, "RegionCount")?,
+        total_blocks: count_field(metadata, "TotalBlocks")?,
+        total_volume: count_field(metadata, "TotalVolume")?,
+        enclosing_size: vec3_field(metadata, "EnclosingSize")?,
     })
 }
 
@@ -264,22 +272,23 @@ pub fn parse(bytes: &[u8]) -> Result<Schematic, SchematicError> {
                 return Err(SchematicError::TotalTooLarge(decoded_total));
             }
 
-            let palette_value = region
-                .get("Palette")
-                .ok_or(SchematicError::MissingField("Palette"))?;
-            let palette_entries = palette_value
-                .as_compound()
-                .ok_or(SchematicError::WrongFieldType("Palette"))?;
-            let mut palette = vec![String::new(); palette_entries.len()];
-            for (block_state, id) in palette_entries {
-                let id = id
-                    .as_int()
-                    .ok_or(SchematicError::WrongFieldType("Palette"))?;
-                let slot = usize::try_from(id).map_err(|_| SchematicError::PaletteTooLarge)?;
-                if slot >= palette.len() {
-                    return Err(SchematicError::PaletteTooLarge);
-                }
-                palette[slot] = block_state.clone();
+            // `BlockStatePalette` 是方块状态列表，索引就是列表下标。这里只取
+            // `Name`：预览按方块 id 上色，`Properties`（朝向、半砖等）不影响颜色。
+            let palette_entries = region
+                .get("BlockStatePalette")
+                .ok_or(SchematicError::MissingField("BlockStatePalette"))?
+                .as_list()
+                .ok_or(SchematicError::WrongFieldType("BlockStatePalette"))?;
+            if palette_entries.len() > MAX_PALETTE {
+                return Err(SchematicError::PaletteTooLarge);
+            }
+            let mut palette = Vec::with_capacity(palette_entries.len());
+            for entry in palette_entries {
+                let block = entry
+                    .get("Name")
+                    .and_then(Value::as_str)
+                    .ok_or(SchematicError::WrongFieldType("BlockStatePalette"))?;
+                palette.push(block.to_owned());
             }
 
             let longs = region

@@ -101,6 +101,14 @@ impl Value {
     }
 
     #[must_use]
+    pub fn as_list(&self) -> Option<&[Value]> {
+        match self {
+            Value::List(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn as_long_array(&self) -> Option<&[i64]> {
         match self {
             Value::LongArray(values) => Some(values),

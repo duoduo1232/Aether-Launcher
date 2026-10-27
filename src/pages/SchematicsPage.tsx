@@ -11,6 +11,7 @@ import {
   ArrowUpload24Regular,
   ClipboardPaste24Regular,
   Cube24Regular,
+  FolderOpen24Regular,
   Warning24Regular,
 } from "@fluentui/react-icons";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -28,6 +29,7 @@ import {
   deleteSchematic,
   emptySchematicListing,
   importSchematic,
+  importSchematicFolder,
   isTauri,
   listInstances,
   listSchematics,
@@ -160,6 +162,35 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     },
     [importTargetId, reload],
   );
+
+  /** 整个文件夹导入：后端打开选择框，递归复制并保留子文件夹结构。 */
+  const handleImportFolder = useCallback(async () => {
+    if (!targetId) {
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      const result = await importSchematicFolder(targetId);
+      if (!result) {
+        return;
+      }
+      const skipped =
+        result.skipped.length > 0
+          ? `，跳过 ${result.skipped.length} 个（${result.skipped
+              .slice(0, 3)
+              .map((item) => item.relativePath)
+              .join("、")}${result.skipped.length > 3 ? " 等" : ""}）`
+          : "";
+      setNotice(`已导入 ${result.imported} 个投影${skipped}`);
+      reload();
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [reload, targetId]);
 
   const handlePreview = useCallback(
     async (instanceId: string, item: SchematicSummary) => {
@@ -346,6 +377,13 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
               }}
             >
               导入投影
+            </Button>
+            <Button
+              icon={<FolderOpen24Regular />}
+              disabled={!desktop || busy || targetId === null}
+              onClick={() => void handleImportFolder()}
+            >
+              导入文件夹
             </Button>
           </div>
         }

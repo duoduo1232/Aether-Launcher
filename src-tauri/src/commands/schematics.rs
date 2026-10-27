@@ -20,6 +20,7 @@ use aether_schematic::{LitematicMetadata, RegionData, parse, read_metadata};
 use aether_storage::{InstanceStore, list_instances};
 use serde::Serialize;
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 /// 单个投影文件的读取上限。
 const MAX_SCHEMATIC_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -430,6 +431,169 @@ pub(crate) async fn import_schematic(
     })
     .await
     .map_err(|_| "schematic import task failed".to_owned())?
+}
+
+/// 一次文件夹导入的结果。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicFolderImport {
+    /// 成功复制进来的文件数。
+    imported: usize,
+    /// 跳过的文件，只带 `schematics/` 下的相对路径和稳定分类。
+    skipped: Vec<SchematicFolderSkip>,
+}
+
+/// 一个被跳过的文件。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicFolderSkip {
+    relative_path: String,
+    reason: &'static str,
+}
+
+/// 把一个文件夹里的 `.litematic` 全部导入指定实例，保留子文件夹结构。
+///
+/// 文件夹由后端用系统选择框打开，前端只给实例 ID。重名文件自动改名，
+/// 解析失败、超限或路径不安全的文件记进 `skipped`，不中断其余文件。
+/// 取消选择时返回 `Ok(None)`。
+#[tauri::command]
+pub(crate) async fn import_schematic_folder(
+    app: tauri::AppHandle,
+    instance_id: String,
+) -> Result<Option<SchematicFolderImport>, String> {
+    let Some(source) = pick_folder(app.clone(), "选择包含 .litematic 的文件夹").await?
+    else {
+        return Ok(None);
+    };
+    let id = InstanceId::parse(&instance_id).map_err(|_| "invalid instance ID".to_owned())?;
+    let root = instance_store_root(&app)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let store =
+            InstanceStore::open(&root).map_err(|_| "cannot open the instance store".to_owned())?;
+        let instance = store
+            .load(id)
+            .map_err(|_| "instance not found in the managed store".to_owned())?;
+        let directory = instance.root.join("schematics");
+        fs::create_dir_all(&directory)
+            .map_err(|_| "cannot prepare the instance schematics directory".to_owned())?;
+
+        let mut files = Vec::new();
+        let mut budget = MAX_SCAN_ENTRIES;
+        collect_litematics(&source, "", 0, &mut files, &mut budget);
+        files.sort();
+
+        let mut imported = 0usize;
+        let mut skipped = Vec::new();
+        for relative_path in files {
+            match copy_one_schematic(&source, &directory, &relative_path) {
+                Ok(()) => imported += 1,
+                Err(reason) => skipped.push(SchematicFolderSkip {
+                    relative_path,
+                    reason,
+                }),
+            }
+        }
+
+        Ok(Some(SchematicFolderImport { imported, skipped }))
+    })
+    .await
+    .map_err(|_| "schematic folder import task failed".to_owned())?
+}
+
+/// 后端打开系统文件夹选择框；取消时返回 `None`。
+async fn pick_folder(
+    app: tauri::AppHandle,
+    title: &'static str,
+) -> Result<Option<PathBuf>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().set_title(title).blocking_pick_folder()
+    })
+    .await
+    .map_err(|error| format!("folder picker failed: {error}"))?;
+
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    picked
+        .into_path()
+        .map(Some)
+        .map_err(|_| "the selected folder path is not usable".to_owned())
+}
+
+/// 递归收集 `root` 下的 `.litematic`，返回 `/` 分隔的相对路径。
+fn collect_litematics(
+    root: &Path,
+    prefix: &str,
+    depth: usize,
+    files: &mut Vec<String>,
+    budget: &mut usize,
+) {
+    if depth > MAX_RELATIVE_DEPTH || *budget == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        let path = entry.path();
+        // 符号链接可能指向文件夹之外，直接跳过。
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let relative = if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if relative.len() > MAX_RELATIVE_PATH_LEN {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_litematics(&path, &relative, depth + 1, files, budget);
+        } else if metadata.is_file() && name.ends_with(".litematic") {
+            files.push(relative);
+        }
+    }
+}
+
+/// 复制一个投影文件到实例的 `schematics/`，保留子文件夹，重名自动改名。
+fn copy_one_schematic(
+    source_root: &Path,
+    destination_root: &Path,
+    relative_path: &str,
+) -> Result<(), &'static str> {
+    validate_relative_path(relative_path, true).map_err(|_| "unsafe-relative-path")?;
+
+    let mut source = source_root.to_path_buf();
+    for segment in relative_path.split('/') {
+        source.push(segment);
+    }
+    let bytes = read_capped(&source).map_err(|_| "unreadable")?;
+    // 先解析再落盘：坏文件不进列表，也不会在导入后显示成「解析失败」。
+    read_metadata(&bytes).map_err(|_| "unparseable")?;
+
+    let (folder, file_name) = match relative_path.rsplit_once('/') {
+        Some((folder, name)) => (folder, name),
+        None => ("", relative_path),
+    };
+    let mut directory = destination_root.to_path_buf();
+    for segment in folder.split('/').filter(|segment| !segment.is_empty()) {
+        directory.push(segment);
+    }
+    fs::create_dir_all(&directory).map_err(|_| "io")?;
+    let destination = unique_destination(&directory, file_name).map_err(|_| "io")?;
+    write_atomically(&directory, &destination, &bytes).map_err(|_| "io")
 }
 
 /// 删除指定实例里的一个投影文件。

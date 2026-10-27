@@ -76,6 +76,7 @@ pub fn run() {
             commands::schematics::list_schematics,
             commands::schematics::read_schematic,
             commands::schematics::import_schematic,
+            commands::schematics::import_schematic_folder,
             commands::schematics::delete_schematic,
             commands::schematics::paste_schematic,
         ])

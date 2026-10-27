@@ -18,6 +18,7 @@ declare module "./call" {
     list_schematics: void;
     read_schematic: { instanceId: string; relativePath: string };
     import_schematic: { instanceId: string; fileName: string; bytes: number[] };
+    import_schematic_folder: { instanceId: string };
     delete_schematic: { instanceId: string; relativePath: string };
     paste_schematic: {
       fromInstanceId: string;
@@ -32,6 +33,7 @@ declare module "./call" {
     list_schematics: SchematicListing;
     read_schematic: SchematicDetail;
     import_schematic: string;
+    import_schematic_folder: SchematicFolderImport | null;
     delete_schematic: null;
     paste_schematic: string;
   }
@@ -132,6 +134,29 @@ export async function importSchematic(
     fileName,
     bytes: Array.from(bytes),
   });
+}
+
+/** 一个被文件夹导入跳过的文件；`reason` 是稳定分类。 */
+export type SchematicFolderSkip = {
+  relativePath: string;
+  reason: string;
+};
+
+/** 一次文件夹导入的结果。 */
+export type SchematicFolderImport = {
+  imported: number;
+  skipped: SchematicFolderSkip[];
+};
+
+/**
+ * 把一个文件夹里的 `.litematic` 全部导入指定实例，保留子文件夹结构。
+ *
+ * 文件夹由**后端**用系统选择框打开，前端只给实例 ID；取消选择时返回 `null`。
+ */
+export async function importSchematicFolder(
+  instanceId: string,
+): Promise<SchematicFolderImport | null> {
+  return callCommand("import_schematic_folder", { instanceId });
 }
 
 export async function deleteSchematic(

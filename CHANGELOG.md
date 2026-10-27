@@ -62,3 +62,11 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - Document language set to `zh-CN`
 - Download plans reject unsafe or duplicate destination paths
 - `copy_schematic_to_instance` replaced by `paste_schematic`, which covers both same-instance folder moves and cross-version copies; the schematic commands now take a `relativePath` instead of a bare file name
+
+### Fixed
+
+- `.litematic` parsing now follows the layout Litematica actually writes: the name, author, region count and totals live in the `Metadata` compound rather than at the root, the totals are `TAG_Int` (both integer widths are accepted), and a region palette is the `BlockStatePalette` list of block states rather than a name-to-index compound. Every real schematic previously failed with `missing required litematic field RegionCount`, so imports were rejected and no scanned file could be summarised.
+
+### Added
+
+- `import_schematic_folder`: pick a folder and copy every `.litematic` inside it into the selected instance, keeping the subfolder structure, renaming on conflict and reporting the files it had to skip

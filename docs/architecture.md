@@ -197,6 +197,7 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 投影文件跟着实例走：每个实例游戏目录下的 `schematics/` 就是它的投影库。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
 
+- **`.litematic` 的真实布局**：根上是 `Version`、`SubVersion`、`MinecraftDataVersion`、`Metadata` 复合和 `Regions` 复合。名称、作者、`RegionCount`、`TotalBlocks`、`TotalVolume`、`EnclosingSize` 都在 `Metadata` 里，计数是 `TAG_Int`（也接受 `TAG_Long`）。每个区域的调色板是 `BlockStatePalette`——一个方块状态列表，索引就是列表下标；预览只取其中的 `Name`，`Properties` 不参与上色。
 - **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。
 - **只列出有投影的版本**：`list_schematics` 跳过 `schematics/` 不存在或为空的实例，所以 134 个版本里只有真正放过投影的那几个会出现。解析失败的文件仍会带出来，归到所属版本的警告里。
 - **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。
@@ -206,6 +207,7 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 | `list_schematics` | 递归扫描所有实例，只返回有投影的版本 |
 | `read_schematic` | 完整解码一个投影，返回 3D 预览数据 |
 | `import_schematic` | 前端读取用户选择的文件**内容**传进来，写进 `schematics/` 根目录，同名拒绝覆盖 |
+| `import_schematic_folder` | 后端打开文件夹选择框，递归复制其中所有 `.litematic`，保留子文件夹，重名自动改名；解析失败的文件记进 `skipped` |
 | `delete_schematic` | 删除一个投影 |
 | `paste_schematic` | 复制或移动到目标版本的任意文件夹，返回新的相对路径 |
 

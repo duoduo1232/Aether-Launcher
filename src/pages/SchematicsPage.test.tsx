@@ -343,4 +343,48 @@ describe("SchematicsPage", () => {
       expect.anything(),
     );
   });
+
+  it("imports a whole folder and reports what was skipped", async () => {
+    enableTauri();
+    mockBackend({
+      import_schematic_folder: () => ({
+        imported: 3,
+        skipped: [{ relativePath: "broken.litematic", reason: "unparseable" }],
+      }),
+    });
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入文件夹" }));
+
+    expect(
+      await screen.findByText(/已导入 3 个投影，跳过 1 个/),
+    ).toBeInTheDocument();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("import_schematic_folder", {
+      instanceId: expect.any(String),
+    });
+  });
+
+  it("does nothing when the folder picker is dismissed", async () => {
+    enableTauri();
+    mockBackend({ import_schematic_folder: () => null });
+
+    render(<SchematicsPage page={page} />);
+    await waitFor(() => {
+      expect(screen.getByText("城堡")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入文件夹" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+        "import_schematic_folder",
+        expect.anything(),
+      ),
+    );
+    expect(screen.queryByText(/已导入/)).not.toBeInTheDocument();
+  });
 });
