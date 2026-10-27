@@ -303,7 +303,8 @@ fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
         origin_version: String::new(),
     }];
 
-    let game_root = instance.root.join("minecraft");
+    // 游戏目录就是实例记录的 `.minecraft`：原地读，不复制。
+    let game_root = instance.effective_game_directory();
     let shared = game_root.join("schematics");
     if !sources.iter().any(|source| source.directory == shared) {
         sources.push(ScanSource {

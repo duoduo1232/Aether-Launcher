@@ -203,7 +203,7 @@ export function ImportInstancesDialog({
         if (needsManifest) {
           await cacheVanillaVersionManifest(instance.version);
         }
-        files += await installVanillaClientLibraries(instance.version);
+        files += await installVanillaClientLibraries(instance.id, instance.version);
       } catch (failure: unknown) {
         failures.push(`${instance.version}：${describeCommandError(failure)}`);
       }

@@ -23,7 +23,7 @@ declare module "./call" {
 
   interface CommandResults {
     list_instances: InstanceListing;
-    create_instance: InstanceSummary;
+    create_instance: InstanceSummary | null;
   }
 }
 
@@ -71,10 +71,14 @@ export async function listInstances(): Promise<InstanceListing> {
   return callCommand("list_instances");
 }
 
-/** 新建一个实例。非桌面版会 reject，调用方负责把提示显示出来。 */
+/**
+ * 新建一个实例。非桌面版会 reject，调用方负责把提示显示出来。
+ *
+ * 游戏目录由后端弹出选择框让用户挑，前端不传路径；用户取消选择时返回 `null`。
+ */
 export async function createInstance(
   input: CreateInstanceInput,
-): Promise<InstanceSummary> {
+): Promise<InstanceSummary | null> {
   return callCommand("create_instance", {
     name: input.name.trim(),
     version: input.version.trim(),

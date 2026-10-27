@@ -72,3 +72,15 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 ### Added
 
 - `import_schematic_folder`: pick a folder and copy every `.litematic` inside it into the selected instance, keeping the subfolder structure, renaming on conflict and reporting the files it had to skip
+
+### Changed
+
+- **Instances now read the user's own `.minecraft` instead of an app-private copy.** Previously every create/import wrote into `%APPDATA%\app.aetherlauncher.desktop\game` and gave each instance an empty `minecraft/` folder, so a machine whose real game directory held 1652 `.litematic` files showed three of them, and launching meant downloading tens of gigabytes a second time. A record now carries a `game_directory` field pointing at the real `.minecraft`, resolved by the backend (the frontend never passes a path) and validated as an existing, non-symlinked directory. Several instances may share one game directory, exactly like PCL2/HMCL/Prism.
+- Creating an instance asks for the game directory with a native folder picker; cancelling returns `null` rather than an error.
+- `install_vanilla_client_libraries` takes the instance ID and downloads into that instance's game directory. The "download and complete" button in the create dialog now only caches the official version JSON, because the game directory is not known until the instance exists; installing happens from the instances page afterwards.
+- `create_instance` no longer creates an empty `minecraft/` folder. Records written before this change have no `game_directory` and fall back to `root/minecraft`, so existing instances keep working.
+
+### Fixed
+
+- Importing a version whose `versions/<id>/<id>.json` already exists used to skip silently. It is now reported as `DuplicateName` so the UI can say the version is already installed; the existing file is still never overwritten. A parent version that is already present (the vanilla JSON in a shared `.minecraft`) is not treated as a conflict.
+- The launch coordinator registry is keyed by game directory, so instances bound to different `.minecraft` folders no longer share one coordinator and stopping a game scans the game directories that were actually started.

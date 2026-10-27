@@ -221,6 +221,7 @@ fn result_dto_reports_imported_instances_and_skips() {
         name: "1.20.1".to_owned(),
         version: VersionId::parse("1.20.1").unwrap(),
         root: PathBuf::from("instances"),
+        game_directory: None,
         state: InstanceState::Incomplete,
     };
     let dto = ImportResultDto {

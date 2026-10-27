@@ -165,10 +165,11 @@ Java 发现命令 `list_java_runtimes` 是只读且无参数的 IPC：Tauri 使�
 
 - `detect` / `plan_candidates` 是纯函数：输入是目录快照 `ExistingFiles`，输出每个版本的导入计划。检测顺序是 Prism → PCL2 → HMCL → BakaXL：Prism 目录里也有 `.minecraft` 形状的树，先判它才不会被当成普通游戏文件夹。都没有时按普通游戏文件夹处理（`ImportSourceKind::Folder`）。
 - `scan_game_directory` 把真实游戏目录变成快照。它**不遍历整棵树**：真实的 `.minecraft` 光 `libraries/` 和 `assets/` 就有几千个文件，整树扫描会撞上 4096 条目上限。它只收集根目录条目（启动器标记）和 `versions/<id>/<id>.json`（含根下 `.minecraft/` 一层），跳过符号链接，条目上限同样是 4096。`scan_directory` 保留给需要整树快照的调用方。
-- `import_versions(source_root, game_root, base, ids)` 执行导入：读取 `versions/<id>/<id>.json` 及其 `inheritsFrom` 祖先（深度上限 32、单个文件 8 MiB），把每个 JSON 发布到受管游戏目录 `<app data>/game/versions/<id>/`（已存在则不覆盖），再为每个版本创建一个受管实例。
-- `import_prism_instances(launcher_root, base, ids)` 只创建实例，不复制任何文件。Prism 的 `meta/` 是它自己的组件格式，不是 Mojang 版本 JSON，所以实例按 `mmc-pack.json` 里的 `net.minecraft` 组件版本创建；加载器组件（Fabric / Quilt / Forge / NeoForge / LiteLoader）读出来只用于展示，不安装。实例名取自 `instance.cfg` 的 `name=`，不接受调用方传入。
+- `import_versions(source_root, game_root, base, ids)` 执行导入：读取 `versions/<id>/<id>.json` 及其 `inheritsFrom` 祖先（深度上限 32、单个文件 8 MiB），把每个 JSON 发布到 `game_root/versions/<id>/`，再为每个版本创建一个实例，**实例记录绑定到 `game_root` 本身**。`game_root` 就是用户自己的 `.minecraft`，`source_root` 通常也是它（从文件夹导入时两者相同），所以导入是把版本登记进同一个目录，不是搬一份。
+- **同名版本不覆盖**：`versions/<id>/<id>.json` 已存在时返回 `DuplicateName`，界面把它列成「已存在」提示，那个版本（可能是官方校验过的、也可能是别的启动器装的）原样保留。继承链上的父版本已存在不算冲突：原版 JSON 早就在同一个 `.minecraft` 里是常态。
+- `import_prism_instances(launcher_root, game_root, base, ids)` 只创建实例，不复制任何文件。Prism 的 `meta/` 是它自己的组件格式，不是 Mojang 版本 JSON，所以实例按 `mmc-pack.json` 里的 `net.minecraft` 组件版本创建；每个实例绑定到它自己的 `instances/<id>/.minecraft`。加载器组件（Fabric / Quilt / Forge / NeoForge / LiteLoader）读出来只用于展示，不安装。实例名取自 `instance.cfg` 的 `name=`，不接受调用方传入。
 
-客户端 JAR、依赖库、资源和 natives 不复制。它们由 `install_vanilla_client_libraries` 按清单下载并校验，官方源失败时回退 BMCLAPI 镜像；导入对话框在导入成功后直接提供这一步。Prism 实例没有版本 JSON，所以前端会先调 `cache_vanilla_version_manifest` 把官方清单缓存进受管游戏目录，再补齐文件。
+客户端 JAR、依赖库、资源和 natives 不复制。它们由 `install_vanilla_client_libraries(id, version)` 按清单下载并校验，**装进该实例记录的游戏目录**（也就是那个 `.minecraft`），官方源失败时回退 BMCLAPI 镜像。Prism 实例没有版本 JSON，所以前端会先调 `cache_vanilla_version_manifest` 把官方清单缓存进同一个游戏目录，再补齐文件。
 
 ### 导入的 IPC 边界
 
@@ -195,7 +196,9 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 ## 投影图（`.litematic`）
 
-`.minecraft` 里的投影是**所有启动器共用**的：它不在实例私有目录里，而在游戏目录里。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
+`.minecraft` 是**所有启动器共用的一份**：Aether 直接读它，也直接往里下载，从不复制、不搬位置。私有目录（`%APPDATA%\app.aetherlauncher.desktop`）只放实例记录 `instances/<uuid>/instance.json` 这类小型配置文件，和 PCL 的 `PCL/` 文件夹是同一定位。
+
+投影图跟着实例走：每个实例游戏目录下的 `schematics/` 就是它的投影库。扫描和整理都在 `src-tauri/src/commands/schematics.rs`，解码在 `aether-schematic`。
 
 - **`.litematic` 的真实布局**：根上是 `Version`、`SubVersion`、`MinecraftDataVersion`、`Metadata` 复合和 `Regions` 复合。名称、作者、`RegionCount`、`TotalBlocks`、`TotalVolume`、`EnclosingSize` 都在 `Metadata` 里，计数是 `TAG_Int`（也接受 `TAG_Long`）。每个区域的调色板是 `BlockStatePalette`——一个方块状态列表，索引就是列表下标；预览只取其中的 `Name`，`Properties` 不参与上色。
 - **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。

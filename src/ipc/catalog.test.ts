@@ -65,18 +65,21 @@ describe("cacheVanillaVersionManifest", () => {
 
 describe("installVanillaClientLibraries", () => {
   it("rejects browser-only invocation without calling native code", async () => {
-    await expect(installVanillaClientLibraries("1.21.1")).rejects.toThrow("需要桌面版");
+    await expect(installVanillaClientLibraries("id-1", "1.21.1")).rejects.toThrow(
+      "需要桌面版",
+    );
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("only passes the requested version ID, never a URL or path", async () => {
+  it("passes the instance ID and version, never a URL or path", async () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {},
       configurable: true,
     });
     vi.mocked(invoke).mockResolvedValue(42);
-    await expect(installVanillaClientLibraries("1.21.1")).resolves.toBe(42);
+    await expect(installVanillaClientLibraries("id-1", "1.21.1")).resolves.toBe(42);
     expect(invoke).toHaveBeenCalledWith("install_vanilla_client_libraries", {
+      id: "id-1",
       version: "1.21.1",
     });
   });

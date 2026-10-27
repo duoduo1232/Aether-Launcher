@@ -123,11 +123,15 @@ fn describe_failure(error: &DownloadError) -> String {
 }
 
 /// Downloads and SHA-1-verifies the client JAR, libraries, native archives
-/// and assets of an already cached Vanilla version. Returns the number of
 /// verified files. Natives are extracted at launch; no instance is marked ready.
+///
+/// The destination is the instance's own game directory — the real `.minecraft`
+/// it was created against — so the files land where every other launcher on the
+/// machine already looks for them.
 #[tauri::command]
 pub async fn install_vanilla_client_libraries(
     app: tauri::AppHandle,
+    id: String,
     version: String,
 ) -> Result<usize, String> {
     let base = app
@@ -135,8 +139,21 @@ pub async fn install_vanilla_client_libraries(
         .app_data_dir()
         .map_err(|_| "application data directory is unavailable".to_owned())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let instance_id =
+            aether_core::InstanceId::parse(&id).map_err(|_| "invalid instance ID".to_owned())?;
+        let instance = aether_storage::InstanceStore::open(&base)
+            .map_err(|error| error.to_string())?
+            .load(instance_id)
+            .map_err(|error| error.to_string())?;
+        let game_root = instance.effective_game_directory();
+        if !game_root.is_dir() {
+            return Err(format!(
+                "the instance's game directory is missing: {}",
+                game_root.display()
+            ));
+        }
         let transport = KernelHttpTransport::new(UreqKernel::new());
-        install_version(&transport, &base.join("game"), &version)
+        install_version(&transport, &game_root, &version)
     })
     .await
     .map_err(|_| "client and library installation task failed".to_owned())?

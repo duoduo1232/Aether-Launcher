@@ -76,10 +76,15 @@ pub struct ImportState {
 /// The variant decides how [`import_versions`] turns the selection into managed
 /// instances, so a token can never be replayed against the wrong pipeline.
 enum PendingSource {
-    /// A `.minecraft`-shaped game directory; version metadata is copied out.
+    /// 一个 `.minecraft` 形状的游戏目录。导入就是把实例记录指向**它本身**：
+    /// 版本元数据写回它的 `versions/`，游戏文件原地读取，不复制。
     GameDirectory { root: PathBuf },
-    /// A Prism/MultiMC launcher folder; instances are recreated from their pack.
-    PrismLauncher { root: PathBuf },
+    /// Prism/MultiMC 启动器文件夹；实例按 pack 重建，绑定到各自的游戏目录。
+    PrismLauncher {
+        root: PathBuf,
+        /// 这个启动器的游戏目录（`instances/`），实例各有一份 `.minecraft`。
+        game_directory: PathBuf,
+    },
 }
 
 impl ImportState {
@@ -243,9 +248,14 @@ fn build_prism_installation(state: &ImportState, root: &Path) -> LauncherInstall
     let instances = prism::list_instances(root);
     let mut sources = Vec::new();
 
+    // Prism/MultiMC 每个实例自带一个游戏目录（`instances/<id>/.minecraft`），
+    // 加载器、mods、saves 都在里面。启动和扫描都读这个目录，不复制。
+    let game_directory = prism::locate_instances_root(root);
     if !instances.is_empty()
+        && let Some(game_directory) = game_directory
         && let Ok(token) = state.remember(PendingSource::PrismLauncher {
             root: root.to_path_buf(),
+            game_directory,
         })
     {
         sources.push(ImportSourceDto {
@@ -608,11 +618,14 @@ pub(crate) async fn import_versions(
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = match &pending {
             PendingSource::GameDirectory { root } => {
-                aether_storage::import_versions(root, &base.join("game"), &base, &ids)
+                // 导入的目标就是这个 `.minecraft` 本身：版本元数据写回它的
+                // `versions/`，实例记录也指向它，一个字节都不复制。
+                aether_storage::import_versions(root, root, &base, &ids)
             }
-            PendingSource::PrismLauncher { root } => {
-                aether_storage::import_prism_instances(root, &base, &ids)
-            }
+            PendingSource::PrismLauncher {
+                root,
+                game_directory,
+            } => aether_storage::import_prism_instances(root, game_directory, &base, &ids),
         }
         .map_err(|error| format!("cannot import instances: {error}"))?;
 

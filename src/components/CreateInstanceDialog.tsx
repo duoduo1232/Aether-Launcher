@@ -15,7 +15,6 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import {
   cacheVanillaVersionManifest,
-  installVanillaClientLibraries,
   createInstance,
   describeCommandError,
   isTauri,
@@ -142,6 +141,13 @@ export function CreateInstanceDialog({
     }
   };
 
+  /**
+   * 「下载并补齐」现在要等实例存在后才能做：安装目标是实例记录里的游戏目录
+   * （用户自己的 `.minecraft`），而前端从不传路径。
+   *
+   * 所以这里只把官方版本 JSON 缓存进那个游戏目录，创建实例后再由实例页的
+   * 「下载并补齐游戏文件」把客户端、依赖库和资源装进去。
+   */
   const handleInstall = async () => {
     const error = validateInstanceVersion(effectiveVersion);
     if (error !== null) {
@@ -151,12 +157,12 @@ export function CreateInstanceDialog({
     setInstalling(true);
     setCacheResult(null);
     try {
-      const id = effectiveVersion.trim();
-      await cacheVanillaVersionManifest(id);
-      const count = await installVanillaClientLibraries(id);
-      setCacheResult(`已下载并校验 ${count} 个文件（客户端、依赖库、资源）。现在可以创建实例并启动。`);
+      const cached = await cacheVanillaVersionManifest(effectiveVersion.trim());
+      setCacheResult(
+        `已校验并缓存 ${cached} 的官方版本 JSON。创建实例后，在实例页点「下载并补齐游戏文件」把客户端、依赖库和资源装进该实例的游戏目录。`,
+      );
     } catch (error: unknown) {
-      setCacheResult(`安装失败：${describeCommandError(error)}`);
+      setCacheResult(`安装失败：${describeCommandError(error)}`);
     } finally {
       setInstalling(false);
     }
@@ -188,6 +194,11 @@ export function CreateInstanceDialog({
         );
       } catch {
         // 存储不可用时忽略，创建本身已经成功
+      }
+      // 用户取消了游戏目录选择：不是错误，保持对话框打开即可。
+      if (created === null) {
+        setSubmitting(false);
+        return;
       }
       onCreated(created);
       close();

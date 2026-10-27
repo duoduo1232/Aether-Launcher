@@ -248,6 +248,7 @@ describe("ImportInstancesDialog", () => {
       await screen.findByText("已下载并校验 12 个文件。"),
     ).toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith("install_vanilla_client_libraries", {
+      id: "a",
       version: "1.20.1",
     });
     expect(invoke).not.toHaveBeenCalledWith(

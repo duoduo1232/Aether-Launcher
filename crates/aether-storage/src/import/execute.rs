@@ -61,8 +61,8 @@ pub enum ImportExecuteError {
     /// The caller passed more than [`MAX_IMPORT_VERSIONS`] identifiers.
     #[error("too many versions were selected for one import")]
     TooManyVersions,
-    /// The managed game tree exists but is not a plain directory.
-    #[error("the managed game directory is not usable")]
+    /// The game directory (the user's `.minecraft`) is missing or not a directory.
+    #[error("the game directory is not usable")]
     InvalidGameRoot,
     /// A directory operation on the managed game tree failed.
     #[error("cannot prepare the managed game directory")]
@@ -137,9 +137,10 @@ pub struct ImportOutcome {
 /// Copies the selected versions out of `source_root` and creates one instance
 /// per version under `base`.
 ///
-/// `game_root` is the launcher-owned game tree (`<app data>/game`); its
-/// `versions/` directory is created when missing. `base` is the instance store
-/// root, the same one [`create_instance`] expects.
+/// `game_root` is the user's own `.minecraft`: the version metadata is written into
+/// its `versions/` directory, in place, so every launcher on the machine sees the
+/// same versions. `base` is the instance store root, the same one
+/// [`create_instance`] expects.
 ///
 /// A version that cannot be imported is reported in [`ImportOutcome::skipped`]
 /// and does not stop the others. Only a source that is not a usable directory,
@@ -151,6 +152,7 @@ pub fn import_versions(
     version_ids: &[String],
 ) -> Result<ImportOutcome, ImportExecuteError> {
     let source_root = canonical_directory(source_root).ok_or(ImportExecuteError::InvalidSource)?;
+    let game_root = canonical_directory(game_root).ok_or(ImportExecuteError::InvalidGameRoot)?;
 
     if version_ids.is_empty() {
         return Err(ImportExecuteError::NothingSelected);
@@ -159,7 +161,7 @@ pub fn import_versions(
         return Err(ImportExecuteError::TooManyVersions);
     }
 
-    let versions_root = prepare_versions_root(game_root)?;
+    let versions_root = prepare_versions_root(&game_root)?;
 
     let mut outcome = ImportOutcome::default();
     let mut seen: Vec<&str> = Vec::new();
@@ -171,7 +173,7 @@ pub fn import_versions(
         }
         seen.push(version_id.as_str());
 
-        match import_one(&source_root, &versions_root, base, version_id) {
+        match import_one(&source_root, &versions_root, &game_root, base, version_id) {
             Ok(instance) => outcome.imported.push(instance),
             Err(reason) => outcome.skipped.push((version_id.clone(), reason)),
         }
@@ -199,11 +201,13 @@ pub fn import_versions(
 /// is expected to say so.
 pub fn import_prism_instances(
     launcher_root: &Path,
+    game_root: &Path,
     base: &Path,
     instance_ids: &[String],
 ) -> Result<ImportOutcome, ImportExecuteError> {
     let launcher_root =
         canonical_directory(launcher_root).ok_or(ImportExecuteError::InvalidSource)?;
+    let game_root = canonical_directory(game_root).ok_or(ImportExecuteError::InvalidGameRoot)?;
 
     if instance_ids.is_empty() {
         return Err(ImportExecuteError::NothingSelected);
@@ -221,7 +225,7 @@ pub fn import_prism_instances(
         }
         seen.push(instance_id.as_str());
 
-        match import_one_prism(&launcher_root, base, instance_id) {
+        match import_one_prism(&launcher_root, &game_root, base, instance_id) {
             Ok(instance) => outcome.imported.push(instance),
             Err(reason) => outcome.skipped.push((instance_id.clone(), reason)),
         }
@@ -233,6 +237,7 @@ pub fn import_prism_instances(
 /// Imports exactly one Prism instance, returning the reason instead of aborting.
 fn import_one_prism(
     launcher_root: &Path,
+    game_root: &Path,
     base: &Path,
     instance_id: &str,
 ) -> Result<GameInstance, ImportSkipReason> {
@@ -249,13 +254,28 @@ fn import_one_prism(
         return Err(ImportSkipReason::UnsafeVersionId);
     }
 
-    create_instance(base, &instance.name, &instance.minecraft_version).map_err(map_create_error)
+    // 每个 Prism/MultiMC 实例的游戏目录在它自己的文件夹里
+    // （`instances/<id>/.minecraft`）；目录是 `instances/` 时按实例 ID 取。
+    let instance_game_directory = game_root.join(instance_id).join(".minecraft");
+    let game_directory = if instance_game_directory.is_dir() {
+        instance_game_directory
+    } else {
+        game_root.join(instance_id)
+    };
+
+    create_instance(
+        base,
+        &instance.name,
+        &instance.minecraft_version,
+        &game_directory,
+    )
+    .map_err(map_create_error)
 }
 
-/// Imports exactly one version, returning the reason instead of aborting.
 fn import_one(
     source_root: &Path,
     versions_root: &Path,
+    game_root: &Path,
     base: &Path,
     version_id: &str,
 ) -> Result<GameInstance, ImportSkipReason> {
@@ -266,11 +286,17 @@ fn import_one(
     // Read the whole chain before writing anything, so a broken parent cannot
     // leave a half-imported child behind in the game tree.
     let chain = read_inheritance_chain(source_root, version_id)?;
+    // 只有**被选中的那个版本**同名才算「已经有了」；继承链上的父版本（比如原版
+    // 1.20.4）早就装在同一个 `.minecraft` 里是常态，跳过它不提示。
     for (id, bytes) in &chain {
-        write_version_json(versions_root, id, bytes)?;
+        match write_version_json(versions_root, id, bytes) {
+            Ok(()) => {}
+            Err(ImportSkipReason::DuplicateName) if id != version_id => {}
+            Err(reason) => return Err(reason),
+        }
     }
 
-    create_instance(base, version_id, version_id).map_err(map_create_error)
+    create_instance(base, version_id, version_id, game_root).map_err(map_create_error)
 }
 
 /// Reads `version_id` and every ancestor it inherits from, child first.
@@ -350,26 +376,40 @@ fn parse_inherits_from(bytes: &[u8]) -> Result<Option<String>, ImportSkipReason>
     Ok(header.inherits_from)
 }
 
-/// Publishes one version JSON, leaving an existing file untouched.
+/// 写一份版本 JSON 到 `versions/<id>/<id>.json`，**绝不覆盖**已有文件。
+///
+/// 已经有同名版本时返回 [`ImportSkipReason::DuplicateName`]，让调用方把它作为
+/// 「已存在」提示给用户：那个版本可能是官方校验过的、也可能是别的启动器装的，
+/// 直接覆盖会把它弄坏。
 fn write_version_json(
     versions_root: &Path,
     version_id: &str,
     bytes: &[u8],
 ) -> Result<(), ImportSkipReason> {
     let directory = versions_root.join(version_id);
-    fs::create_dir_all(&directory).map_err(|_| ImportSkipReason::Io)?;
-
     let destination = directory.join(format!("{version_id}.json"));
+
+    // 先查再建目录：已经有同名版本时连空目录都不留下。
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ImportSkipReason::UnsafeSource);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(ImportSkipReason::Io),
+    }
+
     match fs::symlink_metadata(&destination) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(ImportSkipReason::UnsafeSource);
         }
-        // Never overwrite: an already installed version may have been verified
-        // against the official catalog, and the import must not replace it.
-        Ok(_) => return Ok(()),
+        // 已存在：原样保留并报告，由界面提示「这个版本已经有了」。
+        Ok(_) => return Err(ImportSkipReason::DuplicateName),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(ImportSkipReason::Io),
     }
+
+    fs::create_dir_all(&directory).map_err(|_| ImportSkipReason::Io)?;
 
     // Stage and rename so a crash cannot leave a truncated JSON behind.
     let staging = directory.join(format!(
@@ -455,9 +495,10 @@ fn map_create_error(error: CreateError) -> ImportSkipReason {
         CreateError::DuplicateName(_) => ImportSkipReason::DuplicateName,
         CreateError::InvalidName(_) => ImportSkipReason::InvalidName,
         CreateError::InvalidVersion(_) => ImportSkipReason::UnsafeVersionId,
-        CreateError::UnsafeBase | CreateError::AlreadyExists | CreateError::Io(_) => {
-            ImportSkipReason::Io
-        }
+        CreateError::UnsafeBase
+        | CreateError::UnsafeGameDirectory
+        | CreateError::AlreadyExists
+        | CreateError::Io(_) => ImportSkipReason::Io,
     }
 }
 

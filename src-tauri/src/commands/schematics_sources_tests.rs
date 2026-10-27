@@ -17,6 +17,7 @@ fn instance_with_root(root: PathBuf) -> GameInstance {
         name: "测试实例".to_owned(),
         version: VersionId::parse("1.21.1").expect("version"),
         root,
+        game_directory: None,
         state: InstanceState::Ready,
     }
 }

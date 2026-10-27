@@ -126,8 +126,8 @@ fn copies_every_ancestor_of_an_inheriting_version() {
 }
 
 #[test]
-fn never_overwrites_an_already_installed_version_json() {
-    let fixture = Fixture::new("no-overwrite");
+fn an_already_installed_version_is_reported_not_overwritten() {
+    let fixture = Fixture::new("already-installed");
     fixture.write_source_version("1.20.1", r#"{"id":"1.20.1","source":"foreign"}"#);
 
     let installed = fixture.game().join("versions").join("1.20.1");
@@ -140,10 +140,19 @@ fn never_overwrites_an_already_installed_version_json() {
 
     let outcome = fixture.import(&["1.20.1"]);
 
-    assert_eq!(outcome.imported.len(), 1);
+    // 同名版本已经存在：报告出来让界面提示，而不是悄悄跳过或覆盖。
+    assert!(
+        outcome.imported.is_empty(),
+        "an existing version must not produce a second instance"
+    );
+    assert_eq!(
+        skip_reason(&outcome, "1.20.1"),
+        Some(ImportSkipReason::DuplicateName)
+    );
     assert_eq!(
         fixture.read_game_version("1.20.1").as_deref(),
-        Some(r#"{"id":"1.20.1","source":"official"}"#)
+        Some(r#"{"id":"1.20.1","source":"official"}"#),
+        "the installed version must be left untouched"
     );
 }
 
@@ -276,21 +285,27 @@ fn a_file_as_source_is_rejected() {
 }
 
 #[test]
-fn the_game_tree_is_created_when_it_does_not_exist_yet() {
-    let fixture = Fixture::new("fresh-game");
+fn a_missing_game_directory_aborts_the_import() {
+    let fixture = Fixture::new("missing-game");
     fixture.write_source_version("1.20.1", r#"{"id":"1.20.1"}"#);
     let game = fixture.root.join("game-not-created");
 
-    let outcome = import_versions(
+    let error = import_versions(
         &fixture.source(),
         &game,
         &fixture.store(),
         &["1.20.1".to_owned()],
     )
-    .unwrap();
+    .expect_err("an absent game directory must be rejected");
 
-    assert_eq!(outcome.imported.len(), 1);
-    assert!(game.join("versions").join("1.20.1").is_dir());
+    assert!(
+        matches!(error, ImportExecuteError::InvalidGameRoot),
+        "expected InvalidGameRoot, got {error:?}"
+    );
+    assert!(
+        !game.exists(),
+        "the game directory must not be created as a side effect"
+    );
 }
 
 #[test]

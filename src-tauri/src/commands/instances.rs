@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use aether_core::{GameInstance, InstanceState};
 use serde::Serialize;
 use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 /// One entry of the instance list as the frontend sees it.
 ///
@@ -100,21 +101,47 @@ pub(crate) async fn list_instances(app: tauri::AppHandle) -> Result<InstanceList
     .map_err(|error| format!("instance listing task failed: {error}"))?
 }
 
+/// 新建实例。游戏目录由**后端**弹出选择框让用户挑，前端从不传路径。
+///
+/// 用户取消选择时返回 `Ok(None)`：这不是错误，不需要提示。
 #[tauri::command]
 pub(crate) async fn create_instance(
     app: tauri::AppHandle,
     name: String,
     version: String,
-) -> Result<InstanceSummary, String> {
+) -> Result<Option<InstanceSummary>, String> {
     let root = instance_store_root(&app)?;
+    let Some(game_directory) = pick_game_directory(&app).await? else {
+        return Ok(None);
+    };
 
     tauri::async_runtime::spawn_blocking(move || {
-        aether_storage::create_instance(&root, &name, &version)
+        aether_storage::create_instance(&root, &name, &version, &game_directory)
             .map(|instance| InstanceSummary::from_instance(&instance))
             .map_err(|error| format!("cannot create instance: {error}"))
     })
     .await
     .map_err(|error| format!("instance creation task failed: {error}"))?
+    .map(Some)
+}
+
+/// 让用户选择一个 `.minecraft` 作为游戏目录；取消时返回 `None`。
+async fn pick_game_directory(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title("选择游戏目录（.minecraft）")
+        .pick_folder(move |picked| {
+            let _ = sender.send(picked);
+        });
+    receiver
+        .recv()
+        .map_err(|_| "the folder picker closed unexpectedly".to_owned())?
+        .map(|path| {
+            path.into_path()
+                .map_err(|error| format!("the chosen folder is not usable: {error}"))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -127,6 +154,7 @@ mod tests {
             name: "Survival".to_owned(),
             version: aether_core::VersionId::parse("1.21.1").unwrap(),
             root: PathBuf::from("instances"),
+            game_directory: None,
             state: InstanceState::Ready,
         }
     }

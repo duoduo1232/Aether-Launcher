@@ -19,9 +19,12 @@ use tauri::Manager;
 
 /// Owned for the lifetime of the Tauri application, not per IPC invocation.
 /// The registry prevents a duplicate launch from losing an earlier child handle.
+///
+/// A coordinator is bound to one game directory, and two instances may point at
+/// different `.minecraft` folders, so they are kept per canonical game directory.
 #[derive(Default)]
 pub struct LaunchState {
-    coordinator: Mutex<Option<InstanceLaunchCoordinator>>,
+    coordinators: Mutex<BTreeMap<PathBuf, InstanceLaunchCoordinator>>,
 }
 
 fn parse_id(id: &str) -> Result<InstanceId, String> {
@@ -38,20 +41,21 @@ fn instance_store_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base)
 }
 
-/// The launcher-owned game tree that the installer fills. It is never selected
-/// by IPC and never points at an existing official `.minecraft`.
-pub(super) fn installed_game_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let path = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "application data directory is unavailable".to_owned())?
-        .join("game");
+/// The game directory of one instance: the real `.minecraft` its record points at.
+///
+/// It is resolved from the instance record, never from IPC, so the frontend cannot
+/// redirect a launch at an arbitrary folder. Old records without the field fall
+/// back to `<instance root>/minecraft`, which is where they were created.
+fn instance_game_directory(instance: &aether_core::GameInstance) -> Result<PathBuf, String> {
+    let path = instance.effective_game_directory();
     if !path.join("versions").is_dir() {
-        return Err(
-            "no installed Minecraft versions were found; install a version first".to_owned(),
-        );
+        return Err(format!(
+            "this instance's game directory has no versions folder: {}",
+            path.display()
+        ));
     }
-    std::fs::canonicalize(path).map_err(|error| format!("cannot open installed Minecraft: {error}"))
+    std::fs::canonicalize(&path)
+        .map_err(|error| format!("cannot open the instance game directory: {error}"))
 }
 
 pub(super) fn current_environment() -> Environment {
@@ -77,11 +81,11 @@ pub async fn activate_installed_instance(app: tauri::AppHandle, id: String) -> R
     tauri::async_runtime::spawn_blocking(move || {
         let id = parse_id(&id)?;
         let store_root = instance_store_root(&app)?;
-        let game_root = installed_game_directory(&app)?;
         let instance = InstanceStore::open(&store_root)
             .map_err(|error| error.to_string())?
             .load(id)
             .map_err(|error| error.to_string())?;
+        let game_root = instance_game_directory(&instance)?;
         let resolved = load_resolved_version_manifest(&game_root, instance.version.as_str())
             .map_err(|error| error.to_string())?;
         let client_version = resolved
@@ -132,7 +136,11 @@ pub async fn start_installed_instance(
         let id = parse_id(&id)?;
         let uuid = offline_uuid(&offline_name).map_err(|error| error.to_string())?;
         let root = instance_store_root(&app)?;
-        let game = installed_game_directory(&app)?;
+        let instance = InstanceStore::open(&root)
+            .map_err(|error| error.to_string())?
+            .load(id)
+            .map_err(|error| error.to_string())?;
+        let game = instance_game_directory(&instance)?;
         let mut vars = BTreeMap::new();
         vars.insert("auth_player_name".to_owned(), offline_name);
         vars.insert("auth_uuid".to_owned(), uuid.simple().to_string());
@@ -150,16 +158,16 @@ pub async fn start_installed_instance(
         let runtimes = aether_runtime::discover_java_runtimes();
         let state = app.state::<LaunchState>();
         let mut guard = state
-            .coordinator
+            .coordinators
             .lock()
             .map_err(|_| "game process registry is unavailable".to_owned())?;
-        if guard.is_none() {
-            *guard = Some(
-                InstanceLaunchCoordinator::open(&root, &game).map_err(|error| error.to_string())?,
-            );
+        if !guard.contains_key(&game) {
+            let coordinator =
+                InstanceLaunchCoordinator::open(&root, &game).map_err(|error| error.to_string())?;
+            guard.insert(game.clone(), coordinator);
         }
         guard
-            .as_mut()
+            .get_mut(&game)
             .ok_or_else(|| "game launcher unavailable".to_owned())?
             .start(
                 id,
@@ -185,14 +193,16 @@ pub async fn stop_installed_instance(
         let id = parse_id(&id)?;
         let state = app.state::<LaunchState>();
         let mut guard = state
-            .coordinator
+            .coordinators
             .lock()
             .map_err(|_| "game process registry is unavailable".to_owned())?;
-        guard
-            .as_mut()
-            .ok_or_else(|| "no game was started in this session".to_owned())?
-            .stop(id)
-            .map_err(|error| error.to_string())
+        // 哪个游戏目录启动的就在哪个里停：同一进程会话里可能有多个游戏目录。
+        for coordinator in guard.values_mut() {
+            if coordinator.status(id).is_ok() {
+                return coordinator.stop(id).map_err(|error| error.to_string());
+            }
+        }
+        Err("no game was started in this session".to_owned())
     })
     .await
     .map_err(|error| format!("game stop task failed: {error}"))?

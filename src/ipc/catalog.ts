@@ -19,7 +19,7 @@ declare module "./call" {
   interface CommandArgs {
     list_minecraft_versions: void;
     cache_vanilla_version_manifest: { version: string };
-    install_vanilla_client_libraries: { version: string };
+    install_vanilla_client_libraries: { id: string; version: string };
   }
 
   interface CommandResults {
@@ -50,9 +50,12 @@ export function cacheVanillaVersionManifest(version: string): Promise<string> {
  * assets of an already cached version. Resolves to the number of verified
  * files. Natives are extracted at launch.
  */
-export function installVanillaClientLibraries(version: string): Promise<number> {
+export function installVanillaClientLibraries(
+  id: string,
+  version: string,
+): Promise<number> {
   if (!isTauri()) {
     return Promise.reject(new Error("需要桌面版才能安装客户端与依赖库"));
   }
-  return callCommand("install_vanilla_client_libraries", { version });
+  return callCommand("install_vanilla_client_libraries", { id, version });
 }
