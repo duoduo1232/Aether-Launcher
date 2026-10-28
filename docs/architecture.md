@@ -240,17 +240,21 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 纯色方块看起来就是马赛克：木板没有纹理、楼梯是整块立方体、玻璃不透明。真实观感要用 Minecraft 自己的
 `blockstates/*.json`、`models/**/*.json` 和 `textures/**/*.png` —— 它们都在玩家已经下载好的版本 jar 里。
 
-**资源包由用户手动触发提取，不在打开页面时自动做。** 一个客户端 jar 二十多 MB、上千个 model，进页面就解压会
-每次等好几秒。预览窗口顶部有一条提示：「当前是纯色预览 + 版本下拉框 + 提取材质」，用户选一个版本点按钮才解 jar。
+**材质从哪来是一个保存的设置，提取才是按需的。** 一个客户端 jar 二十多 MB、上千个 model，
+进页面就解压会每次等好几秒。所以分成两件事：
+
+- **选择**：设置页的「投影图材质」选一个版本，选中即保存在本机。预览窗口读这个设置，
+  自动套用；选「纯色预览」就退回纯色方块。
+- **提取**：发生在第一次套用时，结果按 jar 缓存在应用数据目录，之后只读缓存。
 
 提取在 `src-tauri/src/commands/schematics/asset_pack/`：
 
 | 文件 | 职责 |
 | --- | --- |
-| `mod.rs` | `build_asset_pack`：读 jar（`MAX_ENTRIES = 40_000`、`MAX_JSON_BYTES`、`MAX_TEXTURE_BYTES`、`MAX_TEXTURES`），解析 blockstate 与模型 |
-| `model.rs` | `bake_all` / `resolve_model`：走父链合并模型，把 element 展开成带 UV 的四边形，按 `cullface` 记录可剔除方向 |
-| `pack.rs` | `build_atlas`：每张 16×16 贴图放一个格子，最近邻缩放，输出一张 PNG 和每张图的 0..1 UV |
-| `cache.rs` | 找版本 jar（`MIN_LIBRARY_JAR_BYTES = 8 MiB` 过滤掉 loader 的小 jar）、缓存键与读写 |
+| `mod.rs` | `build_asset_pack`：读 jar（`MAX_ENTRIES = 40_000`、`MAX_JSON_BYTES`、`MAX_TEXTURE_BYTES`、`MAX_TEXTURES`），解析 blockstate 与模型，建图集后把四边形 UV 落进对应格子 |
+| `model.rs` | `bake_all` / `resolve_model`：走父链合并模型，把 element 展开成带 UV 的四边形，按 `cullface` 记录可剔除方向，按方块名决定渲染层 |
+| `pack.rs` | `build_atlas`：每张 16×16 贴图放一个格子，交给解码器统一转换成 8 位 RGBA，输出一张 PNG 和每张图的 0..1 UV |
+| `cache.rs` | 找版本 jar（优先与版本目录同名的那个，`MIN_LIBRARY_JAR_BYTES = 8 MiB` 过滤掉 loader 的小 jar）、缓存键与读写 |
 
 - **缓存键 = jar 路径 + 大小 + 修改时间**，不用内容哈希 —— 算哈希要读 25 MB，换来的只是重装同版本时多命中一次。
   缓存在应用数据目录的 `asset-packs/<键>/` 下，包含 `pack.json` 与 `atlas.png`。
@@ -266,6 +270,14 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 - 图集必须 `NearestFilter`，否则像素纹理被插值糊掉。
 
 资源包里没有的方块退回纯色整方块（`fallback`），不会凭空消失；超过 `maxQuads`（40 万）就停止继续展开，避免把页面拖死。
+
+两条踩过的坑，改这块前先看：
+
+- **UV 必须乘上图集格子。** 烘焙阶段只能算出「这张贴图在这个面里占 0..1 的哪一段」，
+  它不知道贴图落在图集第几格。漏掉 `apply_atlas_slots` 这一步，每个面都会采样整张图集，
+  画面就是一片乱码。
+- **PNG 解码要交给解码器做颜色转换。** 原版贴图大量是索引色，自己按 `ColorType` 取字节
+  拿不到调色板，只会吐出洋红占位。
 
 ## 还没有的部分
 
