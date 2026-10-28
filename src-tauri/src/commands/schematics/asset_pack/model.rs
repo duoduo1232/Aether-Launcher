@@ -3,7 +3,7 @@
 //! Minecraft 的模型系统有两层：
 //!
 //! 1. **blockstate**：`variants` 把一组属性（`facing=north,half=top`）映射到
-//!    一个模型，并带 `x`/`y` 旋转；`multipart` 则按条件叠加多个部件；
+//!    一个模型，并带 `x`/`y` 旋转与 `uvlock`；`multipart` 则按条件叠加多个部件；
 //! 2. **model**：`elements` 是一堆立方体盒子（`from`/`to`，单位 1/16 方块），
 //!    每个盒子六个面各自带 `uv`、贴图引用和 `cullface`；`parent` 用于继承，
 //!    子模型覆盖父模型的贴图与元素。
@@ -156,7 +156,6 @@ pub fn referenced_textures(blocks: &HashMap<String, Vec<VariantBinding>>) -> Has
 fn layer_for(block_id: &str) -> RenderLayer {
     let name = block_id.strip_prefix("minecraft:").unwrap_or(block_id);
 
-    // 半透明：真的要看穿过去。
     const TRANSLUCENT: [&str; 8] = [
         "glass",
         "glass_pane",
@@ -171,7 +170,6 @@ fn layer_for(block_id: &str) -> RenderLayer {
         return RenderLayer::Translucent;
     }
 
-    // 二值透明：alpha 低于阈值直接丢弃。
     const CUTOUT: [&str; 12] = [
         "leaves",
         "vine",
@@ -252,6 +250,11 @@ fn bake_entry(
         .get("y")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0) as i32;
+    // `uvlock: true` 表示「方块转的时候，贴图方向不跟着转」。
+    let uvlock = entry
+        .get("uvlock")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
 
     let mut quads = Vec::new();
     let mut texture_ids = HashSet::new();
@@ -288,8 +291,6 @@ fn bake_entry(
                 .map(|face| (*face, fallback_face.clone()))
                 .collect(),
         };
-        let mut textures = resolved.textures.clone();
-        textures.insert("all".to_owned(), texture.clone());
         for face in ALL_FACES {
             let mut quad = build_quad(&cube, face, &fallback_face, layer);
             quad.uv = Some((texture.clone(), texture.clone()));
@@ -298,6 +299,7 @@ fn bake_entry(
         texture_ids.insert(texture);
     }
 
+    let _ = uvlock;
     Some(VariantBinding {
         when,
         rotation_x,
@@ -459,7 +461,7 @@ pub(super) fn apply_atlas_slots(
 /// 从外面看时视觉上的左上角 —— 这是原版烘焙器自己的约定，换个顺序贴图就会
 /// 转 90° 或镜像。
 fn face_corners(face: Face, from: [f32; 3], to: [f32; 3]) -> [[f32; 3]; 4] {
-    // 模型里允许 `from` 大于 `to`（原版有些"内表面"就是这么写的，比如
+    // 模型里允许 `from` 大于 `to`（原版有些「内表面」就是这么写的，比如
     // `cube_bottom_top_inner_faces` 的第二个盒子）。先归一化成 min/max，
     // 否则角点的左右会颠倒，绕序和贴图一起反掉。
     let x0 = from[0].min(to[0]);

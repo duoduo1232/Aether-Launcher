@@ -302,6 +302,44 @@ mod tests {
             assert!(slot.u0 < slot.u1 && slot.v0 < slot.v1, "{id} is empty");
         }
     }
+    /// 每个四边形的 UV 必须落在它那张贴图的图集格子**内部**。
+    ///
+    /// 注意不能要求「必须落在格子的四个角」：模型的 `uv` 常常只取贴图的一小块
+    /// （栅栏门用 `[0,7,2,9]` 这种局部矩形），四个角本来就落在格子中间。真正
+    /// 要盯的是「有没有跑到别的格子去」。
+    #[test]
+    fn every_quad_uv_stays_inside_its_cell() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
+        let mut checked = 0;
+        for (block, bindings) in &pack.blocks {
+            for binding in bindings {
+                for quad in &binding.model.quads {
+                    let Some((texture, _)) = &quad.uv else {
+                        continue;
+                    };
+                    let Some(slot) = pack.atlas.get(texture) else {
+                        continue;
+                    };
+                    // 留一个像素的余量：最近邻采样在边界上会轻微溢出。
+                    let margin = 1.0 / 512.0;
+                    for uv in &quad.uvs {
+                        assert!(
+                            uv[0] >= slot.u0 - margin
+                                && uv[0] <= slot.u1 + margin
+                                && uv[1] >= slot.v0 - margin
+                                && uv[1] <= slot.v1 + margin,
+                            "{block}: uv {uv:?} escaped cell {slot:?}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no quads to check");
+    }
 
     /// 每个面的顶点从外侧看必须是逆时针，否则会被当背面剔除或贴图镜像。
     #[test]
@@ -400,6 +438,30 @@ mod probe {
                     bindings[0].model.texture_ids
                 );
             }
+        }
+    }
+
+    /// 诊断用：打印方向明确的方块（工作台）六个面的顶点与 UV。
+    ///
+    /// 工作台北面是 front、东面是 side、上面是 top，贴图各不相同。打出顶点与
+    /// UV 就能人工核对「左上角配的是 (u0,v0) 还是 (u0,v1)」。
+    #[test]
+    fn report_a_directional_block() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        let Some(bindings) = pack.blocks.get("minecraft:crafting_table") else {
+            println!("crafting_table not baked");
+            return;
+        };
+        for quad in &bindings[0].model.quads {
+            let [p0, p1, p2, p3] = quad.positions;
+            let [u0, u1, u2, u3] = quad.uvs;
+            println!(
+                "\ntex={:?} n={:?}\n  p0={p0:?} uv={u0:?}\n  p1={p1:?} uv={u1:?}\n  p2={p2:?} uv={u2:?}\n  p3={p3:?} uv={u3:?}",
+                quad.uv, quad.normal
+            );
         }
     }
 }

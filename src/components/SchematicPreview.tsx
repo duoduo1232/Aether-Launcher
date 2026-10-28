@@ -195,8 +195,14 @@ function addTexturedMeshes(
     loaded.minFilter = THREE.NearestFilter;
     loaded.generateMipmaps = false;
     loaded.colorSpace = THREE.SRGBColorSpace;
+    // **必须关掉 flipY**：three.js 默认在上传时把图片上下翻转，让 UV 原点落在
+    // 左下；而 Minecraft 的 UV 是「v 越大越靠下」，与 PNG 的行序一致。两者
+    // 叠加会让每个面的贴图上下颠倒，看起来就是「材质全歪」。
+    loaded.flipY = false;
     loaded.needsUpdate = true;
   });
+  // 加载完成前也要先设好，避免首帧按默认值上传。
+  texture.flipY = false;
   disposables.push(texture);
 
   const layers: [LayerBuffers, THREE.MeshLambertMaterial][] = [
