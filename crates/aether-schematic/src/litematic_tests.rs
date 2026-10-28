@@ -409,3 +409,55 @@ fn metadata_is_read_even_when_regions_comes_first() {
     assert_eq!(metadata.minecraft_data_version, 3955);
     assert_eq!(metadata.region_count, 1);
 }
+
+/// 负 `Size` 的选区：起点要按 `min(Position, Position + Size - 1)` 归一化。
+///
+/// Litematica 允许反向选区，这时 `Position` 是最大的那个角，真正的原点在
+/// `Position + Size - 1`。直接用 `Position` 会让整块建筑平移一个尺寸，
+/// 表现为「位置错的」。
+#[test]
+fn a_negative_size_region_starts_at_the_min_corner() {
+    let block: Vec<u64> = vec![1];
+    let longs = encode_litematica_bits(&block, 1);
+
+    let mut root = RootBuilder::new();
+    root.int("Version", 6);
+    root.int("MinecraftDataVersion", 3955);
+    root.begin_compound("Metadata");
+    root.int("RegionCount", 1);
+    root.int("TotalBlocks", 1);
+    root.int("TotalVolume", 8);
+    root.begin_compound("EnclosingSize");
+    root.int("x", 2);
+    root.int("y", 2);
+    root.int("z", 2);
+    root.end_compound();
+    root.end_compound(); // Metadata
+    root.begin_compound("Regions");
+    root.begin_compound("main");
+    root.begin_compound("Position");
+    root.int("x", 10);
+    root.int("y", 20);
+    root.int("z", 30);
+    root.end_compound();
+    // 三个轴都是负的：区域从 (10,20,30) 往负方向延伸 2 格。
+    root.begin_compound("Size");
+    root.int("x", -2);
+    root.int("y", -2);
+    root.int("z", -2);
+    root.end_compound();
+    root.begin_list("BlockStatePalette", 10, 2);
+    root.string("Name", "minecraft:air");
+    root.end_compound();
+    root.string("Name", "minecraft:stone");
+    root.end_compound();
+    root.long_array("BlockStates", &longs);
+    root.end_compound(); // main
+    root.end_compound(); // Regions
+
+    let schematic = parse(&root.gzip()).expect("parse");
+    let region = &schematic.regions[0];
+    assert_eq!(region.size, [2, 2, 2]);
+    // min(10, 10 + (-1)) = 9，其余轴同理。
+    assert_eq!(region.position, [9, 19, 29]);
+}

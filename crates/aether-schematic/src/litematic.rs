@@ -275,9 +275,20 @@ pub fn parse(bytes: &[u8]) -> Result<Schematic, SchematicError> {
     let mut decoded_total: i64 = 0;
     if let Value::Compound(entries) = regions_value {
         for (name, region) in entries {
-            let position = vec3_field(region, "Position")?;
+            let raw_position = vec3_field(region, "Position")?;
             let raw_size = vec3_field(region, "Size")?;
+            // Litematica 允许 `Size` 为负 —— 那表示选区从 `Position` 往负方向延伸。
+            // 原版（SchematicPlacingUtils / LitematicaSchematic#getAreas）的算法是：
+            //   posEndRel = Position + getRelativeEndPositionFromAreaSize(Size)
+            //   posMinRel = min(Position, posEndRel)
+            // 也就是先按 `Size - 1` 算出终点，再和起点取 min。拿 `Position`
+            // 直接当起点，负 size 的区域会整体错位一个尺寸。
             let size = [raw_size[0].abs(), raw_size[1].abs(), raw_size[2].abs()];
+            let position = [
+                raw_position[0].min(raw_position[0] + raw_size[0].signum() * (size[0] - 1)),
+                raw_position[1].min(raw_position[1] + raw_size[1].signum() * (size[1] - 1)),
+                raw_position[2].min(raw_position[2] + raw_size[2].signum() * (size[2] - 1)),
+            ];
             let volume = i64::from(size[0]) * i64::from(size[1]) * i64::from(size[2]);
             if volume > MAX_REGION_VOLUME {
                 return Err(SchematicError::RegionTooLarge(name.clone(), volume));
