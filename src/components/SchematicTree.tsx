@@ -1,5 +1,6 @@
 import {
   Badge,
+  Button,
   Menu,
   MenuItem,
   MenuList,
@@ -19,9 +20,14 @@ import {
   Folder24Regular,
   FolderOpen24Regular,
 } from "@fluentui/react-icons";
+import { useState } from "react";
 import type { SchematicSummary } from "../ipc";
 import type { SchematicFolderNode } from "../lib/schematicTree";
 import { collectFilePaths } from "../lib/schematicTree";
+
+/// 根目录首次渲染的文件数上限；每次点「继续显示」再加这么多。
+const ROOT_FILE_PAGE = 100;
+
 /**
  * 一个版本的投影目录树。
  *
@@ -35,8 +41,13 @@ export type SchematicTreeProps = {
   selectionMode: boolean;
   /** 已选中的相对路径（只属于当前实例）。 */
   selected: ReadonlySet<string>;
-  /** 被用户折叠的文件夹路径；默认全部展开。 */
-  collapsedFolders: ReadonlySet<string>;
+  /**
+   * 被用户**展开**的文件夹路径；默认全部折叠。
+   *
+   * 一个版本的 `schematics/` 根上能有七八百个文件，默认全展开就是一次渲染
+   * 上千个 `Menu` 组件，页面会直接卡住。
+   */
+  expandedFolders: ReadonlySet<string>;
   /** 剪贴板里有内容，可以粘贴。 */
   clipboardReady: boolean;
   onToggleFolder: (path: string) => void;
@@ -63,25 +74,42 @@ type FolderLevelProps = SchematicTreeProps & {
 };
 
 function FolderLevel({ node, depth, ...props }: FolderLevelProps) {
+  // 根层可能直接挂着上千个文件（生电存档的 schematics 根上就有 778 个）。
+  // 一次渲染一千个 `Menu` 会卡住主线程，所以先只渲染前一批，其余按需加载。
+  const [visible, setVisible] = useState(ROOT_FILE_PAGE);
+  const limited = depth === 0 && node.files.length > visible;
+  const files = limited ? node.files.slice(0, visible) : node.files;
   return (
     <ul className="schematic-branch">
       {node.folders.map((folder) => (
         <FolderBranch key={folder.path} node={folder} depth={depth} {...props} />
       ))}
-      {node.files.map((file) => (
+      {files.map((file) => (
         <FileRow key={file.relativePath} item={file} depth={depth} {...props} />
       ))}
+      {limited ? (
+        <li className="schematic-branch-item">
+          <Button
+            size="small"
+            appearance="subtle"
+            className="schematic-more"
+            onClick={() => setVisible((count) => count + ROOT_FILE_PAGE)}
+          >
+            还有 {node.files.length - visible} 个文件，点这里继续显示
+          </Button>
+        </li>
+      ) : null}
     </ul>
   );
 }
-
 type FolderBranchProps = SchematicTreeProps & {
   node: SchematicFolderNode;
   depth: number;
 };
 
 function FolderBranch({ node, depth, ...props }: FolderBranchProps) {
-  const open = !props.collapsedFolders.has(node.path);
+  // 默认折叠：展开是用户显式动作，只记展开的那些。
+  const open = props.expandedFolders.has(node.path);
   const files = collectFilePaths(node);
   return (
     <li className="schematic-branch-item">

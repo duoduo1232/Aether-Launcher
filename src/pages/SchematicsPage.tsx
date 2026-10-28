@@ -84,7 +84,9 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   // 版本默认只展开第一个；用户点过之后以点击结果为准。
   const [expandedVersions, setExpandedVersions] = useState<Record<string, boolean>>({});
   // 文件夹默认展开，这里只记被折叠的。
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  // 文件夹默认**折叠**：一个版本的 schematics 根上能有七八百个文件，
+  // 全部展开就是一次渲染上千行，页面直接卡住。只记用户主动展开的。
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [selection, setSelection] = useState<Selection | null>(null);
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
 
@@ -140,9 +142,9 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     }
   }, [instancesQuery, reload]);
 
-  const collapsedByInstance = useMemo(() => {
+  const expandedByInstance = useMemo(() => {
     const map = new Map<string, Set<string>>();
-    for (const key of collapsedFolders) {
+    for (const key of expandedFolders) {
       const index = key.indexOf("|");
       const id = key.slice(0, index);
       const path = key.slice(index + 1);
@@ -151,7 +153,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       map.set(id, set);
     }
     return map;
-  }, [collapsedFolders]);
+  }, [expandedFolders]);
 
   const targetId =
     importTargetId ?? listing.instances[0]?.id ?? allInstances[0]?.id ?? null;
@@ -333,7 +335,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
 
   const toggleFolder = useCallback((instanceId: string, path: string) => {
     const key = `${instanceId}|${path}`;
-    setCollapsedFolders((previous) => {
+    setExpandedFolders((previous) => {
       const next = new Set(previous);
       if (next.has(key)) {
         next.delete(key);
@@ -536,8 +538,8 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
               selected={
                 selection?.instanceId === instance.id ? selection.paths : EMPTY_SET
               }
-              collapsedFolders={
-                collapsedByInstance.get(instance.id) ?? EMPTY_SET
+              expandedFolders={
+                expandedByInstance.get(instance.id) ?? EMPTY_SET
               }
               onToggleVersion={() =>
                 setExpandedVersions((previous) => ({
@@ -595,7 +597,7 @@ type VersionPanelProps = {
   clipboardReady: boolean;
   selectionMode: boolean;
   selected: ReadonlySet<string>;
-  collapsedFolders: ReadonlySet<string>;
+  expandedFolders: ReadonlySet<string>;
   onToggleVersion: () => void;
   onImport: () => void;
   onPaste: (folder: string) => void;
@@ -616,7 +618,7 @@ function VersionPanel({
   clipboardReady,
   selectionMode,
   selected,
-  collapsedFolders,
+  expandedFolders,
   onToggleVersion,
   onImport,
   onPaste,
@@ -679,7 +681,7 @@ function VersionPanel({
                     busy={busy}
                     selectionMode={selectionMode}
                     selected={selected}
-                    collapsedFolders={collapsedFolders}
+                    expandedFolders={expandedFolders}
                     clipboardReady={clipboardReady}
                     onToggleFolder={onToggleFolder}
                     onToggleSelect={onToggleSelect}

@@ -167,6 +167,19 @@ pub fn read_metadata(bytes: &[u8]) -> Result<LitematicMetadata, SchematicError> 
     metadata_from_root(&root)
 }
 
+/// 从文件本身读取元数据，**不把整个文件读进内存**。
+///
+/// 扫描一批投影时用这个：`.litematic` 解压后能有几 GB，而元数据只在开头。
+///
+/// # Errors
+/// 见 [`read_metadata`]。
+pub fn read_metadata_from<R: std::io::Read>(
+    reader: R,
+) -> Result<LitematicMetadata, SchematicError> {
+    let (_, root) = crate::nbt::read_gzip_nbt_from(reader)?;
+    metadata_from_root(&root)
+}
+
 /// 解码一个区域的 `BlockStates`：Litematica 位打包 → 调色板索引序列。
 ///
 /// `volume` 是取绝对值后的方块总数；返回向量按 `(y·sizeZ + z)·sizeX + x`

@@ -490,3 +490,38 @@ fn has_root_scalars(entries: &[(String, Value)]) -> bool {
         .iter()
         .all(|name| entries.iter().any(|(key, _)| key == name))
 }
+
+/// 从任意 `BufRead` 里只解压出根复合的标量字段，读到 `Metadata` 就停。
+///
+/// 这是给**扫描目录**用的版本：调用方传进来的是文件本身，不需要先把整个
+/// `.litematic` 读进内存。本机 1649 个投影压缩后 101 MB，用
+/// [`read_gzip_nbt_without_regions`] 要先 `fs::read` 整份再解压，多出来的
+/// 磁盘 IO 和分配在列表页上是几秒的量级。
+///
+/// # Errors
+/// 见 [`read_gzip_nbt_without_regions`]。
+pub fn read_gzip_nbt_from<R: std::io::Read>(reader: R) -> Result<(String, Value), NbtError> {
+    let mut decoder = flate2::read::GzDecoder::new(reader);
+    let mut decompressed: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 32 * 1024];
+
+    loop {
+        match decoder.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                decompressed.extend_from_slice(&chunk[..read]);
+                if decompressed.len() as u64 > MAX_DECOMPRESSED_BYTES {
+                    return Err(NbtError::DecompressionLimit);
+                }
+                if let Some(result) = read_root_prefix(&decompressed) {
+                    return result;
+                }
+            }
+            // 文件被截断时 gzip 会报错，但已读出的前缀可能仍然够用；
+            // 决定权交给下面的 `read_nbt`，让它按缺失字段报错。
+            Err(_) => break,
+        }
+    }
+
+    read_nbt(&decompressed)
+}

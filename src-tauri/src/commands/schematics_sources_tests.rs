@@ -9,7 +9,19 @@ use std::path::{Path, PathBuf};
 
 use aether_core::{GameInstance, InstanceId, InstanceState, VersionId};
 
-use super::{ORIGIN_GAME, ORIGIN_INSTANCE, ORIGIN_VERSION, display_name, scan_schematics};
+use super::{
+    FailedSchematic, ORIGIN_GAME, ORIGIN_INSTANCE, ORIGIN_VERSION, ScanResult, SchematicSummary,
+    display_name, scan_schematics, scan_sources,
+};
+
+/// 按实例在当前磁盘上的来源跑一次扫描，返回拆分后的两个列表。
+///
+/// 生产路径（`list_schematics`）会缓存 `versions/` 的枚举，这里不缓存 ——
+/// 测试关心的是「给定磁盘状态，扫出什么」。
+fn scan_instance(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedSchematic>) {
+    let ScanResult { schematics, failed } = scan_schematics(&scan_sources(instance));
+    (schematics, failed)
+}
 
 fn instance_with_root(root: PathBuf) -> GameInstance {
     GameInstance {
@@ -99,7 +111,7 @@ fn scans_the_game_directory_when_the_instance_directory_is_empty() {
         "来自游戏目录",
     );
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
 
     assert_eq!(summaries.len(), 1, "failed={failed:?}");
     assert_eq!(summaries[0].origin, ORIGIN_GAME);
@@ -132,7 +144,7 @@ fn scans_every_version_schematics_directory() {
     // 没有 schematics 的版本目录不该造成任何影响。
     fs::create_dir_all(game.join("versions").join("共用一个库")).expect("mkdir");
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
 
     assert_eq!(summaries.len(), 2, "failed={failed:?}");
     assert!(summaries.iter().all(|item| item.origin == ORIGIN_VERSION));
@@ -159,7 +171,7 @@ fn keeps_the_same_relative_path_from_two_sources_apart() {
         "版本的",
     );
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
 
     // 两个不同文件，同一条相对路径，两条都要留着。
     assert_eq!(summaries.len(), 2, "failed={failed:?}");
@@ -184,7 +196,7 @@ fn keeps_the_folder_structure_inside_a_version_directory() {
         "Unnamed",
     );
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
 
     assert_eq!(summaries.len(), 1, "failed={failed:?}");
     assert_eq!(summaries[0].relative_path, "建筑/空城计.litematic");

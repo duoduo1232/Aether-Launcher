@@ -56,7 +56,14 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - Refresh token persistence is opt-in and disabled by default; the store is atomic but not encrypted, and its protection comes from the application data directory's permissions
 - Instance commands accept typed identifiers only, with the storage root directory resolved by the backend rather than supplied by the caller
 
+### Performance
+
+- Projection listing no longer looks like a hang. On a store with 134 instances sharing one `.minecraft` (1723 files, 101 MB compressed) the page spent 816 ms rebuilding the same source list per instance and 1.56 s decompressing headers one file at a time, then rendered roughly 1700 rows in a single pass. `versions/` is now enumerated once per game directory, headers are parsed on a thread pool (8 workers max, serial below 16 files), scanning streams the gzip prefix instead of reading whole files, and the tree folds folders by default with a 100-row root page.
+  The scan returns identical results to the previous serial version; the two tests that cover broken `.litematic` files caught a regression where the parallel pass silently dropped per-file failures, and failures are now reported as `unreadable` or `unparseable` as before.
+
 ### Changed
+
+- Re-importing a version that is already in the store is reported as "已经导入过，不需要再导入" instead of "已有同名实例", which read like an error
 
 - Home greeting follows the local time of day
 - Document language set to `zh-CN`

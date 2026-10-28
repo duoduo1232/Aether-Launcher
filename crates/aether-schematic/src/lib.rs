@@ -10,6 +10,6 @@ pub mod nbt;
 
 pub use litematic::{
     LitematicMetadata, MAX_PALETTE, MAX_REGION_VOLUME, MAX_TOTAL_VOLUME, RegionData, Schematic,
-    SchematicError, bits_per_entry, decode_region_blocks, parse, read_metadata,
+    SchematicError, bits_per_entry, decode_region_blocks, parse, read_metadata, read_metadata_from,
 };
 pub use nbt::{NbtError, Value};

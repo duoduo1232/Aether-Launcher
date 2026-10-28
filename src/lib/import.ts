@@ -47,7 +47,8 @@ export function describeImportSkipReason(reason: string): string {
     case "inheritance-cycle":
       return "版本继承出现循环";
     case "duplicate-name":
-      return "已有同名实例";
+      // 不是错误：这个版本已经导入过了，没有要补的东西。
+      return "已经导入过，不需要再导入";
     case "invalid-name":
       return "版本号不能作为实例名称";
     case "io":

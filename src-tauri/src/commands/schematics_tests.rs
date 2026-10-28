@@ -4,9 +4,16 @@ use std::path::PathBuf;
 use aether_core::{GameInstance, InstanceId, InstanceState, VersionId};
 
 use super::{
-    MAX_RELATIVE_DEPTH, MAX_SCAN_ENTRIES, collect_litematics, copy_one_schematic, scan_schematics,
-    schematic_path, unique_destination, validate_folder_path, validate_relative_path,
+    FailedSchematic, MAX_RELATIVE_DEPTH, MAX_SCAN_ENTRIES, ScanResult, SchematicSummary,
+    collect_litematics, copy_one_schematic, scan_schematics, scan_sources, schematic_path,
+    unique_destination, validate_folder_path, validate_relative_path,
 };
+
+/// 按实例在当前磁盘上的来源跑一次扫描，返回拆分后的两个列表。
+fn scan_instance(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedSchematic>) {
+    let ScanResult { schematics, failed } = scan_schematics(&scan_sources(instance));
+    (schematics, failed)
+}
 
 #[test]
 fn accepts_relative_litematic_paths() {
@@ -73,7 +80,7 @@ fn temp_root(label: &str) -> PathBuf {
 
 #[test]
 fn scan_treats_missing_directory_as_no_schematics() {
-    let (summaries, failed) = scan_schematics(&instance_with_root(temp_root("missing")));
+    let (summaries, failed) = scan_instance(&instance_with_root(temp_root("missing")));
     assert!(summaries.is_empty());
     assert!(failed.is_empty());
 }
@@ -86,7 +93,7 @@ fn scan_ignores_non_litematic_files_and_classifies_broken_ones() {
     fs::write(schematics.join("readme.txt"), b"not a schematic").expect("write txt");
     fs::write(schematics.join("broken.litematic"), b"definitely not gzip").expect("write bad");
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
     assert!(summaries.is_empty());
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].file_name, "broken.litematic");
@@ -115,7 +122,7 @@ fn scan_keeps_the_folder_structure_in_relative_paths() {
     // 子文件夹里的非投影文件同样要忽略。
     fs::write(schematics.join("城堡").join("notes.txt"), b"ignore me").expect("write txt");
 
-    let (summaries, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
     assert!(summaries.is_empty());
     let paths: Vec<&str> = failed
         .iter()
@@ -146,7 +153,7 @@ fn scan_stops_at_the_depth_limit() {
     fs::create_dir_all(&directory).expect("mkdir deep");
     fs::write(directory.join("too-deep.litematic"), b"broken").expect("write deep");
 
-    let (_, failed) = scan_schematics(&instance_with_root(root.clone()));
+    let (_, failed) = scan_instance(&instance_with_root(root.clone()));
     assert!(
         failed.is_empty(),
         "超过深度上限的文件不该被扫描：{failed:?}"

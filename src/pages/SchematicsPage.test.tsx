@@ -199,9 +199,12 @@ describe("SchematicsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
-    expect(
-      screen.getByRole("button", { name: "文件夹 红石" }),
-    ).toBeInTheDocument();
+    // 文件夹默认折叠：根上的文件直接可见，文件夹里的要展开才渲染。
+    const folder = screen.getByRole("button", { name: "文件夹 红石" });
+    expect(folder).toBeInTheDocument();
+    expect(screen.queryByText("红石电路")).not.toBeInTheDocument();
+
+    fireEvent.click(folder);
     expect(screen.getByText("红石电路")).toBeInTheDocument();
   });
 
