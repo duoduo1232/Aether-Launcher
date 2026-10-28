@@ -70,6 +70,11 @@ const CATEGORY_LABEL: Record<InstanceCategory, string> = {
 
 type InstancesPageProps = {
   page: PageDefinition;
+  /**
+   * 打开时直接弹出导入对话框。首页的「导入实例」按钮跳过来时用它，
+   * 免得用户再点一次。
+   */
+  openImport?: boolean;
 };
 
 /**
@@ -78,11 +83,11 @@ type InstancesPageProps = {
  * 数据来自 `list_instances`；浏览器预览里没有 Tauri，返回空列表并显示
  * 「需要桌面版」的提示，不把环境差异当成错误。
  */
-export function InstancesPage({ page }: InstancesPageProps) {
+export function InstancesPage({ page, openImport = false }: InstancesPageProps) {
   const desktop = isTauri();
   const [query, setQuery] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(openImport);
   const [listing, setListing] = useState<InstanceListing>(emptyInstanceListing);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);

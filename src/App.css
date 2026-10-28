@@ -197,7 +197,26 @@ button { letter-spacing: 0; }
 
 .instance-heading { justify-content: flex-start; }
 .instance-copy > .muted { display: block; max-width: 620px; margin-top: 8px; }
-.instance-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+.instance-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+/* 两个按钮高度和宽度对齐，避免一个撑宽一个挤窄。 */
+.instance-actions > button {
+  min-height: 32px;
+}
+.instance-actions > button:first-of-type {
+  min-width: 128px;
+}
+.instance-scan-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
 .launch-button { min-width: 110px; }
 
 .status-grid {

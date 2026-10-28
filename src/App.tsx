@@ -129,6 +129,8 @@ function App() {
     useState<ApplicationInfo>(defaultApplicationInfo);
   const [pageId, setPageId] = useState<PageId>("home");
   const [greeting] = useState(currentGreeting);
+  // 首页点「导入实例」时置真，跳到实例页后自动弹出导入对话框。
+  const [openImport, setOpenImport] = useState(false);
   const { preference, resolved, setPreference } = useTheme();
 
   // 独立预览窗口：整页只有预览，没有侧边栏。
@@ -184,6 +186,11 @@ function App() {
               application={application}
               greeting={greeting}
               summary={page.summary}
+              onImport={() => {
+                setOpenImport(true);
+                setPageId("instances");
+              }}
+              onOpenInstances={() => setPageId("instances")}
             />
           ) : page.id === "settings" ? (
             <SettingsPage
@@ -192,7 +199,8 @@ function App() {
               onThemeChange={setPreference}
             />
           ) : page.id === "instances" ? (
-            <InstancesPage page={page} />
+            <InstancesPage page={page} openImport={openImport} />
+
           ) : page.id === "library" ? (
             <LibraryPage page={page} />
           ) : page.id === "schematics" ? (
