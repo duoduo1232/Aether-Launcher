@@ -1,10 +1,8 @@
 import {
   Badge,
   Button,
-  Dropdown,
   MessageBar,
   MessageBarBody,
-  Option,
   Text,
 } from "@fluentui/react-components";
 import {
@@ -40,7 +38,6 @@ import {
 } from "../ipc";
 import type {
   InstanceSchematics,
-  InstanceSummary,
   SchematicOrigin,
   SchematicSummary,
 } from "../ipc";
@@ -118,10 +115,9 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   } = useQuery(loadList, desktop);
   const listing = data ?? emptySchematicListing;
 
-  // 导入目标用完整实例列表：还没有投影的版本不会出现在上面的列表里。
+  // 刷新时一起重读实例列表：刚在别处新建或导入的版本要能看到。
   const loadInstances = useCallback(async () => listInstances(), []);
   const instancesQuery = useQuery(loadInstances, desktop);
-  const allInstances = instancesQuery.data?.instances ?? [];
 
   const sources = useMemo(
     () =>
@@ -174,9 +170,12 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     return map;
   }, [expandedFolders]);
 
-  const targetId =
-    importTargetId ?? listing.instances[0]?.id ?? allInstances[0]?.id ?? null;
-
+  /**
+   * 导入的落点。
+   *
+   * 目标版本现在只由「版本标题上的导入按钮」决定：点哪个版本就写进哪个
+   * 版本。顶栏不再有下拉框，`targetId` 只作为文件选择框回填时的落点。
+   */
   const handleImportClick = useCallback((instanceId: string) => {
     setError(null);
     setNotice(null);
@@ -216,15 +215,12 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   );
 
   /** 整个文件夹导入：后端打开选择框，递归复制并保留子文件夹结构。 */
-  const handleImportFolder = useCallback(async () => {
-    if (!targetId) {
-      return;
-    }
+  const handleImportFolder = useCallback(async (instanceId: string) => {
     setError(null);
     setNotice(null);
     setBusy(true);
     try {
-      const result = await importSchematicFolder(targetId);
+      const result = await importSchematicFolder(instanceId);
       if (!result) {
         return;
       }
@@ -242,7 +238,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     } finally {
       setBusy(false);
     }
-  }, [reload, targetId]);
+  }, [reload]);
 
   /** 双击打开独立预览窗口；窗口自己加载那一个投影。 */
   const handlePreview = useCallback(
@@ -406,46 +402,8 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         description={page.summary}
         action={
           <div className="toolbar-actions">
-            <Dropdown
-              aria-label="导入目标版本"
-              placeholder="导入目标版本"
-              disabled={!desktop || allInstances.length === 0}
-              value={describeInstance(
-                allInstances.find((instance) => instance.id === targetId),
-              )}
-              onOptionSelect={(_, option) =>
-                setImportTargetId(option.optionValue ?? null)
-              }
-            >
-              {allInstances.map((instance) => (
-                <Option
-                  key={instance.id}
-                  value={instance.id}
-                  text={describeInstance(instance)}
-                >
-                  {describeInstance(instance)}
-                </Option>
-              ))}
-            </Dropdown>
-            <Button
-              appearance="primary"
-              icon={<ArrowUpload24Regular />}
-              disabled={!desktop || busy || targetId === null}
-              onClick={() => {
-                if (targetId) {
-                  handleImportClick(targetId);
-                }
-              }}
-            >
-              导入投影
-            </Button>
-            <Button
-              icon={<FolderOpen24Regular />}
-              disabled={!desktop || busy || targetId === null}
-              onClick={() => void handleImportFolder()}
-            >
-              导入文件夹
-            </Button>
+            {/* 导入的目标版本由**版本标题上的「导入」按钮**决定，这里不再需要
+                选目标：顶栏既没有选中的版本，多做一步选择只会让人犹豫。 */}
             <Button
               icon={<ArrowSync24Regular />}
               disabled={!desktop || busy || status === "loading"}
@@ -593,6 +551,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
                 }))
               }
               onImport={() => handleImportClick(instance.id)}
+              onImportFolder={() => void handleImportFolder(instance.id)}
               onPaste={(folder) => handlePaste(instance.id, folder)}
               onToggleFolder={(path) => toggleFolder(instance.id, path)}
               onToggleSelect={(item) => toggleSelect(instance.id, refOf(item))}
@@ -646,6 +605,7 @@ type VersionPanelProps = {
   expandedFolders: ReadonlySet<string>;
   onToggleVersion: () => void;
   onImport: () => void;
+  onImportFolder: () => void;
   onPaste: (folder: string) => void;
   onToggleFolder: (path: string) => void;
   onToggleSelect: (item: SchematicSummary) => void;
@@ -668,6 +628,7 @@ function VersionPanel({
   expandedFolders,
   onToggleVersion,
   onImport,
+  onImportFolder,
   onPaste,
   onToggleFolder,
   onToggleSelect,
@@ -713,7 +674,15 @@ function VersionPanel({
             disabled={busy}
             onClick={onImport}
           >
-            导入
+            导入投影
+          </Button>
+          <Button
+            size="small"
+            icon={<FolderOpen24Regular />}
+            disabled={busy}
+            onClick={onImportFolder}
+          >
+            导入文件夹
           </Button>
         </div>
       </div>
@@ -778,18 +747,4 @@ function describeError(error: unknown): string {
     return error.message;
   }
   return String(error);
-}
-
-/**
- * 下拉框里的一项：名字与版本相同时只显示一次，避免 `1.10.2（1.10.2）`。
- *
- * `value` 必须和 `Option` 的文本一致，所以两边都走这个函数。
- */
-function describeInstance(instance: InstanceSummary | undefined): string {
-  if (!instance) {
-    return "";
-  }
-  return instance.name === instance.version
-    ? instance.name
-    : `${instance.name}（${instance.version}）`;
 }

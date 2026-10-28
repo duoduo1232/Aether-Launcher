@@ -135,7 +135,9 @@ function App() {
   if (preview) {
     return (
       <FluentProvider theme={resolved === "dark" ? webDarkTheme : webLightTheme}>
-        <div className="app-shell" data-theme={resolved}>
+        {/* 独立窗口没有侧边栏，不能复用 `.app-shell`（那是 220px + 1fr 的
+            两列网格，会把预览整个挤进侧栏那一列）。 */}
+        <div className="preview-shell" data-theme={resolved}>
           <SchematicPreviewWindow {...preview} />
         </div>
       </FluentProvider>

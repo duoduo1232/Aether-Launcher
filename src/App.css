@@ -1126,3 +1126,24 @@ button { letter-spacing: 0; }
   overflow: hidden;
   background: #1b1d23;
 }
+
+/* 独立预览窗口的根：单列、撑满，没有侧边栏那一列。 */
+.preview-shell {
+  height: 100vh;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--shell-background);
+}
+
+.preview-window {
+  width: 100%;
+}
+
+.preview-window > .schematic-preview {
+  /* 主体要吃掉标题和说明之外的全部高度，并且横向铺满。 */
+  flex: 1 1 0;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
+}

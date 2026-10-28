@@ -19,6 +19,14 @@ const page: PageDefinition = {
 const SURVIVAL = "11111111-1111-4111-8111-111111111111";
 const REDSTONE = "22222222-2222-4222-8222-222222222222";
 
+/**
+ * 每个版本标题上都有一组同名按钮（导入投影 / 导入文件夹），按名字取第一个 ——
+ * 测试关心的是「点了会怎样」，不是点的是哪个版本。
+ */
+function firstByRole(role: string, name: string): HTMLElement {
+  return screen.getAllByRole(role, { name })[0];
+}
+
 function metadata(name: string) {
   return {
     name,
@@ -365,7 +373,7 @@ describe("SchematicsPage", () => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "导入投影" }));
+    fireEvent.click(firstByRole("button", "导入投影"));
 
     const input = document.querySelector('input[type="file"]');
     expect(input).not.toBeNull();
@@ -397,7 +405,7 @@ describe("SchematicsPage", () => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "导入文件夹" }));
+    fireEvent.click(firstByRole("button", "导入文件夹"));
 
     expect(
       await screen.findByText(/已导入 3 个投影，跳过 1 个/),
@@ -416,7 +424,7 @@ describe("SchematicsPage", () => {
       expect(screen.getByText("城堡")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "导入文件夹" }));
+    fireEvent.click(firstByRole("button", "导入文件夹"));
 
     await waitFor(() =>
       expect(vi.mocked(invoke)).toHaveBeenCalledWith(
