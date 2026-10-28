@@ -15,7 +15,8 @@ import { isTauri } from "./index";
 
 declare module "./call" {
   interface CommandArgs {
-    list_java_runtimes: void;
+    /** `refresh: true` 时忽略磁盘缓存，强制重新探测。 */
+    list_java_runtimes: { refresh?: boolean } | void;
   }
 
   interface CommandResults {
@@ -37,12 +38,17 @@ export type JavaRuntimeInfo = {
  * 任何失败都当作「没有发现」处理：设置页只需要一个列表，不需要区分
  * 「命令不存在」和「扫描失败」——两种情况用户能做的事是一样的。
  */
-export async function discoverJavaRuntimes(): Promise<JavaRuntimeInfo[]> {
+export async function discoverJavaRuntimes(
+  options: { refresh?: boolean } = {},
+): Promise<JavaRuntimeInfo[]> {
   if (!isTauri()) {
     return [];
   }
   try {
-    return await callCommand("list_java_runtimes");
+    // 后端默认读磁盘缓存；只有点了「重新扫描」才带 refresh 强制重探。
+    return options.refresh
+      ? await callCommand("list_java_runtimes", { refresh: true })
+      : await callCommand("list_java_runtimes");
   } catch {
     return [];
   }

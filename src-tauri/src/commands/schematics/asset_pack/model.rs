@@ -491,8 +491,7 @@ fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, layer: Rende
         {
             for position in positions.iter_mut() {
                 for axis in scale.axes {
-                    position[axis] =
-                        origin[axis] + (position[axis] - origin[axis]) * scale.factor;
+                    position[axis] = origin[axis] + (position[axis] - origin[axis]) * scale.factor;
                 }
             }
         }

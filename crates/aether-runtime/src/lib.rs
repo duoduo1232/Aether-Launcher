@@ -153,7 +153,11 @@ fn extract_vendor(output: &str) -> Option<String> {
     }
 }
 
-/// 扫描系统中常见位置的 Java 安装
+/// 扫描系统中常见位置的 Java 安装。
+///
+/// 结果按「可执行文件路径 + 修改时间」缓存在进程内：设置页每次挂载都会问
+/// 一遍，每次都真的去 spawn `java -version` 会明显卡顿。路径或 mtime 变了
+/// 自然失效，重装 Java 后不需要手工清缓存。
 pub fn discover_java_runtimes() -> Vec<JavaRuntime> {
     let mut runtimes = Vec::new();
     let mut seen = HashSet::new();
@@ -162,17 +166,115 @@ pub fn discover_java_runtimes() -> Vec<JavaRuntime> {
         // Different installs with the same vendor/major/architecture must remain
         // selectable. Only de-duplicate paths resolving to the same executable.
         let identity = std::fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-        if !seen.insert(identity) {
+        if !seen.insert(identity.clone()) {
             continue;
         }
 
+        if let Some(cached) = cached_runtime(&identity) {
+            runtimes.push(cached);
+            continue;
+        }
         if let Ok(runtime) = JavaRuntime::probe(candidate) {
+            remember_runtime(&identity, &runtime);
             runtimes.push(runtime);
         }
     }
 
     runtimes.sort_by_key(|runtime| std::cmp::Reverse(runtime.major_version));
     runtimes
+}
+
+/// 把探测结果写进磁盘缓存，下次启动直接读。
+///
+/// 进程内缓存解决「同一进程里反复扫」，磁盘缓存解决「每次启动都扫」。
+/// 键依然是可执行文件路径 + 修改时间，Java 更新后自然失效。
+pub fn save_discovery_cache(path: &Path, runtimes: &[JavaRuntime]) -> std::io::Result<()> {
+    let entries: Vec<CachedEntry> = runtimes
+        .iter()
+        .filter_map(|runtime| {
+            let identity = std::fs::canonicalize(&runtime.executable)
+                .unwrap_or_else(|_| runtime.executable.clone());
+            let stamp = modified_stamp(&identity)?;
+            Some(CachedEntry {
+                identity: identity.to_string_lossy().into_owned(),
+                stamp,
+                runtime: runtime.clone(),
+            })
+        })
+        .collect();
+    let json = serde_json::to_string(&entries).map_err(std::io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, json)
+}
+
+/// 从磁盘缓存读回仍然有效的运行时；任何一项失效就丢弃它。
+pub fn load_discovery_cache(path: &Path) -> Vec<JavaRuntime> {
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<CachedEntry>>(&json) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let identity = PathBuf::from(&entry.identity);
+        // 可执行文件被删掉或换过，就不再认这条缓存。
+        if modified_stamp(&identity) != Some(entry.stamp) {
+            continue;
+        }
+        if !seen.insert(entry.identity) {
+            continue;
+        }
+        remember_runtime(&identity, &entry.runtime);
+        out.push(entry.runtime);
+    }
+    out.sort_by_key(|runtime| std::cmp::Reverse(runtime.major_version));
+    out
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedEntry {
+    identity: String,
+    stamp: u128,
+    runtime: JavaRuntime,
+}
+
+type ProbeCache = std::collections::HashMap<PathBuf, (u128, JavaRuntime)>;
+
+/// 进程内缓存：规范路径 → (修改时间, 探测结果)。
+fn probe_cache() -> &'static std::sync::Mutex<ProbeCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ProbeCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 可执行文件的修改时间（毫秒）；拿不到就不缓存。
+fn modified_stamp(path: &Path) -> Option<u128> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+}
+
+fn cached_runtime(identity: &Path) -> Option<JavaRuntime> {
+    let stamp = modified_stamp(identity)?;
+    let cache = probe_cache().lock().ok()?;
+    let (cached_stamp, runtime) = cache.get(identity)?;
+    (*cached_stamp == stamp).then(|| runtime.clone())
+}
+
+fn remember_runtime(identity: &Path, runtime: &JavaRuntime) {
+    let Some(stamp) = modified_stamp(identity) else {
+        return;
+    };
+    if let Ok(mut cache) = probe_cache().lock() {
+        cache.insert(identity.to_path_buf(), (stamp, runtime.clone()));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -363,6 +465,45 @@ fn scan_minecraft_runtime(base: &Path, paths: &mut Vec<PathBuf>, executable_name
 mod tests {
     use super::*;
 
+    /// 磁盘缓存要能写出去、读回来，并且跳过已失效的条目。
+    ///
+    /// 这条盯的是「Java 每次都要重扫」：设置页每次挂载都调一次 discover，
+    /// 每次都 spawn `java -version` 太慢。缓存键是「规范路径 + mtime」。
+    #[test]
+    fn discovery_cache_round_trips_and_drops_stale_entries() {
+        let dir = std::env::temp_dir().join(format!("aether-java-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // 用一个真实存在的文件当"可执行文件"，只需要 mtime。
+        let fake_java = dir.join("java.exe");
+        std::fs::write(&fake_java, b"stub").expect("write stub");
+        let cache_file = dir.join("java-runtimes.json");
+
+        let runtime = JavaRuntime {
+            executable: fake_java.clone(),
+            major_version: 21,
+            architecture: "x86_64".to_owned(),
+            vendor: Some("Test".to_owned()),
+        };
+        save_discovery_cache(&cache_file, std::slice::from_ref(&runtime)).expect("save");
+        assert!(cache_file.is_file(), "cache file was not written");
+
+        let loaded = load_discovery_cache(&cache_file);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].major_version, 21);
+
+        // 改一下文件内容让 mtime 变化，缓存应当失效。
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&fake_java, b"stub-v2").expect("rewrite stub");
+        let stale = load_discovery_cache(&cache_file);
+        assert!(
+            stale.is_empty(),
+            "stale entry was kept after the file changed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn parses_java_8_version() {
         let output = r#"java version "1.8.0_391""#;

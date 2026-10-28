@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use aether_runtime::JavaRuntime;
 use serde::Serialize;
+use tauri::Manager;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,11 +46,34 @@ fn application_info() -> ApplicationInfo {
 /// A read-only IPC command: enumerate detected Java installations without
 /// blocking the Tauri main thread. No caller-provided executable is run.
 #[tauri::command]
-async fn list_java_runtimes() -> Result<Vec<JavaRuntimeInfo>, String> {
-    tauri::async_runtime::spawn_blocking(aether_runtime::discover_java_runtimes)
-        .await
-        .map(|runtimes| runtimes.into_iter().map(JavaRuntimeInfo::from).collect())
-        .map_err(|error| format!("Java discovery task failed: {error}"))
+async fn list_java_runtimes(
+    app: tauri::AppHandle,
+    refresh: Option<bool>,
+) -> Result<Vec<JavaRuntimeInfo>, String> {
+    let refresh = refresh.unwrap_or(false);
+    // 磁盘缓存：Java 很少变，没必要每次启动都 spawn 一遍 `java -version`。
+    let cache_path = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("java-runtimes.json"));
+
+    tauri::async_runtime::spawn_blocking(move || {
+        if !refresh && let Some(path) = &cache_path {
+            let cached = aether_runtime::load_discovery_cache(path);
+            if !cached.is_empty() {
+                return cached;
+            }
+        }
+        let fresh = aether_runtime::discover_java_runtimes();
+        if let Some(path) = &cache_path {
+            let _ = aether_runtime::save_discovery_cache(path, &fresh);
+        }
+        fresh
+    })
+    .await
+    .map(|runtimes| runtimes.into_iter().map(JavaRuntimeInfo::from).collect())
+    .map_err(|error| format!("Java discovery task failed: {error}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

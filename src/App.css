@@ -452,7 +452,15 @@ button { letter-spacing: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.status-chip { white-space: nowrap; }
+.status-chip {
+  white-space: nowrap;
+  /* 徽章只占自己的宽度，绝不被 flex 拉满整行。 */
+  flex: none;
+}
+/* 删除按钮同理。 */
+.instance-row > button:last-of-type {
+  flex: none;
+}
 
 
 .skipped-block {
@@ -709,12 +717,13 @@ button { letter-spacing: 0; }
 }
 
 @media (max-width: 640px) {
+  /* `.instance-row` 是 flex 布局，不能再写 `grid-template-columns` / `grid-column`
+     —— 那两条在 flex 容器里无效，还会让「就绪」徽章被撑成横贯整行。 */
   .instance-row {
-    grid-template-columns: 40px minmax(0, 1fr) auto;
+    flex-wrap: wrap;
     row-gap: 8px;
   }
   .instance-badge { width: 40px; height: 34px; font-size: 10px; }
-  .instance-row > button { grid-column: 2 / -1; justify-self: start; }
   .resource-row {
     grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 4px;
@@ -1058,17 +1067,20 @@ button { letter-spacing: 0; }
   padding-right: 4px;
 }
 
-/* 实例按版本类型分组：和 PCL 左侧的分类一样，标题带数量。 */
 .instance-groups {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* flex 子项默认 min-width: auto，会被内容撑开：某一行的长版本名会把整个
+     列表顶宽，连带把「就绪」徽章挤成一条长条。必须显式允许收缩。 */
+  min-width: 0;
 }
 
 .instance-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .instance-group-heading {

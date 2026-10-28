@@ -26,7 +26,8 @@ export function JavaRuntimeSection() {
   const [runtimes, setRuntimes] = useState<JavaRuntimeInfo[]>([]);
   const [loading, setLoading] = useState(desktop);
   const [savedKey, setSavedKey] = useState<string | null>(loadJavaRuntimeKey);
-  // 递增这个令牌表示「再扫一次」，effect 只依赖它，不在 effect 里同步写 state
+  // 递增这个令牌表示「再扫一次」，effect 只依赖它，不在 effect 里同步写 state。
+  // 0 表示首次加载（走缓存），>0 表示用户点了「重新扫描」（强制重探）。
   const [scanToken, setScanToken] = useState(0);
 
   // 扫描是外部读取，结果回来才写 state；effect 体里只发起请求
@@ -36,7 +37,7 @@ export function JavaRuntimeSection() {
     }
 
     let cancelled = false;
-    void discoverJavaRuntimes().then((found) => {
+    void discoverJavaRuntimes({ refresh: scanToken > 0 }).then((found) => {
       if (cancelled) {
         return;
       }
