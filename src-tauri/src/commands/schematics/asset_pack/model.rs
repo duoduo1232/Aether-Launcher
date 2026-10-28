@@ -102,6 +102,26 @@ struct RawElement {
     from: [f32; 3],
     to: [f32; 3],
     faces: Vec<(Face, RawFace)>,
+    /// 元素自身的旋转（`rotation` 字段）。花草的十字模型就是靠它绕 Y 转 45°。
+    rotation: Option<ElementRotation>,
+}
+
+/// `elements[].rotation`：绕某个轴、以 `origin` 为心旋转 `angle` 度。
+#[derive(Debug, Clone, Copy)]
+struct ElementRotation {
+    origin: [f32; 3],
+    axis: RotationAxis,
+    angle: f32,
+    /// `rescale: true` 时把盒子拉伸回原来的外接尺寸（原版用于让斜置的
+    /// 十字模型仍然填满方块）。
+    rescale: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RotationAxis {
+    X,
+    Y,
+    Z,
 }
 
 impl RawElement {
@@ -290,6 +310,7 @@ fn bake_entry(
                 .iter()
                 .map(|face| (*face, fallback_face.clone()))
                 .collect(),
+            rotation: None,
         };
         for face in ALL_FACES {
             let mut quad = build_quad(&cube, face, &fallback_face, layer);
@@ -353,6 +374,7 @@ fn resolve_model(
 fn parse_element(value: &serde_json::Value) -> Option<RawElement> {
     let from = parse_vec3(value.get("from")?)?;
     let to = parse_vec3(value.get("to")?)?;
+    let rotation = parse_element_rotation(value.get("rotation"));
     let faces_object = value.get("faces")?.as_object()?;
 
     let mut faces = Vec::new();
@@ -395,7 +417,38 @@ fn parse_element(value: &serde_json::Value) -> Option<RawElement> {
     if faces.is_empty() {
         return None;
     }
-    Some(RawElement { from, to, faces })
+    Some(RawElement {
+        from,
+        to,
+        faces,
+        rotation,
+    })
+}
+
+/// 解析 `elements[].rotation`。
+fn parse_element_rotation(value: Option<&serde_json::Value>) -> Option<ElementRotation> {
+    let value = value?;
+    let origin = value
+        .get("origin")
+        .and_then(parse_vec3)
+        .unwrap_or([8.0, 8.0, 8.0]);
+    let axis = match value.get("axis").and_then(|a| a.as_str())? {
+        "x" => RotationAxis::X,
+        "y" => RotationAxis::Y,
+        "z" => RotationAxis::Z,
+        _ => return None,
+    };
+    let angle = value.get("angle").and_then(serde_json::Value::as_f64)? as f32;
+    let rescale = value
+        .get("rescale")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Some(ElementRotation {
+        origin,
+        axis,
+        angle,
+        rescale,
+    })
 }
 
 /// 把一个面变成四边形。
@@ -416,14 +469,106 @@ fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, layer: Rende
     let (u0, v0, u1, v1) = (u0 / 16.0, v0 / 16.0, u1 / 16.0, v1 / 16.0);
     let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
 
+    let mut positions = face_corners(face, from, to);
+    let mut normal = face_normal(face);
+
+    // 元素自带的旋转（花草的十字就是绕 Y 转 45°）。漏掉它，十字会退化成
+    // 一张贴在方块中间的黑底薄片。
+    if let Some(rotation) = &element.rotation {
+        let radians = rotation.angle.to_radians();
+        let (sin, cos) = (radians.sin(), radians.cos());
+        // JSON 里 origin 是 0..16 像素，这里换成 0..1 方块空间。
+        let origin = rotation.origin.map(|value| value / 16.0);
+        for position in positions.iter_mut() {
+            *position = rotate_about_axis(*position, origin, rotation.axis, sin, cos);
+        }
+        normal = rotate_direction(normal, rotation.axis, sin, cos);
+
+        // `rescale` 让斜置的盒子重新撑满原来的外接尺寸：把被旋转压缩的那
+        // 两个轴按 1/|cos| 拉伸回去。
+        if rotation.rescale
+            && let Some(scale) = rescale_factor(sin, cos)
+        {
+            for position in positions.iter_mut() {
+                for axis in scale.axes {
+                    position[axis] =
+                        origin[axis] + (position[axis] - origin[axis]) * scale.factor;
+                }
+            }
+        }
+    }
+
     Quad {
-        positions: face_corners(face, from, to),
+        positions,
         uvs,
-        normal: face_normal(face),
+        normal,
         cullface: raw_face.cullface,
         layer,
         uv: None,
     }
+}
+
+/// 绕坐标轴旋转一个点（先平移到 `origin`，转完再平移回去）。
+fn rotate_about_axis(
+    point: [f32; 3],
+    origin: [f32; 3],
+    axis: RotationAxis,
+    sin: f32,
+    cos: f32,
+) -> [f32; 3] {
+    let local = [
+        point[0] - origin[0],
+        point[1] - origin[1],
+        point[2] - origin[2],
+    ];
+    let rotated = rotate_direction(local, axis, sin, cos);
+    [
+        rotated[0] + origin[0],
+        rotated[1] + origin[1],
+        rotated[2] + origin[2],
+    ]
+}
+
+/// 只旋转方向（不平移），用于法线。
+fn rotate_direction(vector: [f32; 3], axis: RotationAxis, sin: f32, cos: f32) -> [f32; 3] {
+    match axis {
+        RotationAxis::X => [
+            vector[0],
+            vector[1] * cos - vector[2] * sin,
+            vector[1] * sin + vector[2] * cos,
+        ],
+        RotationAxis::Y => [
+            vector[0] * cos + vector[2] * sin,
+            vector[1],
+            -vector[0] * sin + vector[2] * cos,
+        ],
+        RotationAxis::Z => [
+            vector[0] * cos - vector[1] * sin,
+            vector[0] * sin + vector[1] * cos,
+            vector[2],
+        ],
+    }
+}
+
+/// `rescale` 需要的拉伸：被旋转的两个轴按 `1/|cos|` 放大。
+fn rescale_factor(sin: f32, cos: f32) -> Option<Rescale> {
+    if sin.abs() < 1e-4 || cos.abs() < 1e-4 {
+        // 45° 之外的角度拉伸不可逆，原版也只对 22.5/45 生效。
+        return None;
+    }
+    let factor = 1.0 / cos.abs();
+    if (factor - 1.0).abs() < 1e-4 {
+        return None;
+    }
+    Some(Rescale {
+        axes: [0, 2],
+        factor,
+    })
+}
+
+struct Rescale {
+    axes: [usize; 2],
+    factor: f32,
 }
 
 /// 把烘焙阶段的 0..1 局部 UV 映射到图集里的实际格子。

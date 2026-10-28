@@ -464,4 +464,36 @@ mod probe {
             );
         }
     }
+
+    /// 花草的十字模型必须真的转出斜面。
+    /// `block/cross` 的两个 element 都带 `rotation: {axis: y, angle: 45}`。
+    /// 漏掉这个旋转，十字就退化成一张贴在方块中间的薄片，画面上是一堆
+    /// 黑底图标。
+    #[test]
+    fn a_cross_model_is_rotated_into_an_x() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        let Some(bindings) = pack
+            .blocks
+            .get("minecraft:dandelion")
+            .or_else(|| pack.blocks.get("minecraft:poppy"))
+            .or_else(|| pack.blocks.get("minecraft:short_grass"))
+        else {
+            println!("no flower baked");
+            return;
+        };
+
+        // 旋转 45° 之后，面的法线不再是轴对齐的。
+        let mut tilted = 0;
+        for quad in &bindings[0].model.quads {
+            let [nx, ny, nz] = quad.normal;
+            if nx.abs() > 0.1 && nz.abs() > 0.1 && ny.abs() < 0.1 {
+                tilted += 1;
+            }
+        }
+        println!("tilted quads: {tilted}/{}", bindings[0].model.quads.len());
+        assert!(tilted > 0, "the cross model was not rotated");
+    }
 }
