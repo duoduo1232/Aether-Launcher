@@ -5,7 +5,7 @@
 //! individual broken records and reports why they were skipped; creation only
 //! accepts a display name and a version identifier.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use aether_core::{GameInstance, InstanceState};
 use serde::Serialize;
@@ -30,21 +30,46 @@ pub struct InstanceSummary {
 }
 
 impl InstanceSummary {
+    /// 构造一个列表项，同时**按磁盘现状**判断状态。
+    ///
+    /// 记录里的 `state` 是创建时写下的 `incomplete`，导入时并不校验文件，所以
+    /// 直接用会让所有实例永远显示「待补齐」。这里改为检查版本 jar 是否真的在
+    /// 游戏目录里：在就是 `ready`，不在才保留原状态。
+    ///
+    /// 只做 `metadata` 查询和一次目录列举，不读文件内容，134 个实例也只有毫秒级。
     pub(crate) fn from_instance(instance: &GameInstance) -> Self {
+        let game_directory = instance.game_directory.clone();
+        let state = match &game_directory {
+            Some(directory) if version_is_installed(directory, instance.version.as_str()) => {
+                InstanceState::Ready
+            }
+            _ => instance.state.clone(),
+        };
         Self {
             id: instance.id.to_string(),
             name: instance.name.clone(),
             version: instance.version.as_str().to_owned(),
-            state: instance_state_label(&instance.state),
+            state: instance_state_label(&state),
             category: instance_category(instance.version.as_str()),
-            game_directory: instance
-                .game_directory
-                .as_ref()
-                .map(|path| path.to_string_lossy().into_owned()),
+            game_directory: game_directory.map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }
 
+/// 这个版本的客户端 jar 是否已经在游戏目录里。
+///
+/// 判据只看 `versions/<版本>/<版本>.jar` 存在且不是符号链接 —— 它就是「能不能
+/// 启动」最直接的那一个文件。库和资源缺失由启动前的验证负责，这里不重复。
+fn version_is_installed(game_directory: &Path, version: &str) -> bool {
+    let jar = game_directory
+        .join("versions")
+        .join(version)
+        .join(format!("{version}.jar"));
+    match std::fs::symlink_metadata(&jar) {
+        Ok(metadata) => metadata.is_file() && !metadata.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
 /// 从版本名推断实例属于哪一类。
 ///
 /// 只做**名字层面的归类**，不读文件：整合包的版本名通常就是整合包名
@@ -347,5 +372,96 @@ mod category_tests {
         assert_eq!(instance_category("Better MC [FABRIC] - BMC1"), "fabric");
         assert_eq!(instance_category("All the Mods 9 - To the Sky"), "modpack");
         // 「原版」是用户自己起的实例名，不是版本号；ASCII 短名仍按纯版本处理。
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use aether_core::{InstanceId, InstanceState, VersionId};
+
+    use super::{InstanceSummary, version_is_installed};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_game(label: &str) -> PathBuf {
+        let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "aether-state-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(path.join("versions")).expect("game");
+        path
+    }
+
+    #[test]
+    fn an_installed_jar_counts_as_ready_even_if_the_record_says_incomplete() {
+        let game = temp_game("ready");
+        let version = "1.21.1";
+        fs::create_dir_all(game.join("versions").join(version)).expect("version dir");
+        fs::write(
+            game.join("versions").join(version).join("1.21.1.jar"),
+            b"jar",
+        )
+        .expect("jar");
+
+        // 记录里是创建时写下的 incomplete：导入不校验文件，不该一直显示「待补齐」。
+        let instance = aether_core::GameInstance {
+            id: InstanceId::new(),
+            name: "Survival".to_owned(),
+            version: VersionId::parse(version).expect("version"),
+            root: game.join("instance"),
+            game_directory: Some(game.clone()),
+            state: InstanceState::Incomplete,
+        };
+
+        let summary = InstanceSummary::from_instance(&instance);
+        assert_eq!(summary.state, "ready");
+
+        fs::remove_dir_all(game).expect("cleanup");
+    }
+
+    #[test]
+    fn a_missing_jar_keeps_the_recorded_state() {
+        let game = temp_game("missing");
+        let instance = aether_core::GameInstance {
+            id: InstanceId::new(),
+            name: "Survival".to_owned(),
+            version: VersionId::parse("1.21.1").expect("version"),
+            root: game.join("instance"),
+            game_directory: Some(game.clone()),
+            state: InstanceState::Incomplete,
+        };
+
+        assert!(!version_is_installed(&game, "1.21.1"));
+        assert_eq!(
+            InstanceSummary::from_instance(&instance).state,
+            "incomplete"
+        );
+
+        fs::remove_dir_all(game).expect("cleanup");
+    }
+
+    #[test]
+    fn a_record_without_a_game_directory_keeps_its_state() {
+        let game = temp_game("no-directory");
+        let instance = aether_core::GameInstance {
+            id: InstanceId::new(),
+            name: "Survival".to_owned(),
+            version: VersionId::parse("1.21.1").expect("version"),
+            root: game.join("instance"),
+            game_directory: None,
+            state: InstanceState::Incomplete,
+        };
+
+        let summary = InstanceSummary::from_instance(&instance);
+        assert_eq!(summary.state, "incomplete");
+        assert!(summary.game_directory.is_none());
+
+        fs::remove_dir_all(game).expect("cleanup");
     }
 }

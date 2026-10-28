@@ -103,3 +103,7 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 ### Performance
 
 - Reading a `.litematic`'s metadata inflates only as far as the root scalars and then stops. Schematics compress at ~55:1, so the old full inflate cost 3.6 s for 1649 files; the whole listing is now 1.40 s instead of 3.99 s.
+### Fixed
+
+- Instance rows no longer collapse: the row is a flex container again after the clickable wrapper broke the four-column grid, and the meta line truncates instead of wrapping over three lines.
+- Instance status is derived from the disk (`versions/<version>/<version>.jar` present) instead of the `incomplete` value written at creation, so installed instances no longer show 待补齐 forever.
