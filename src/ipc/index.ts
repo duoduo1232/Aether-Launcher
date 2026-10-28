@@ -54,9 +54,11 @@ export {
   emptyInstanceListing,
   createInstance,
   listInstances,
+  setGameDirectoryForAllInstances,
 } from "./instances";
 export type {
   CreateInstanceInput,
+  GameDirectoryReport,
   InstanceListing,
   InstanceState,
   InstanceSummary,

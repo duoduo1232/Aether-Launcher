@@ -88,6 +88,7 @@ function schematicListing(): SchematicListing {
       },
     ],
     skipped: [],
+    missingGameDirectory: 0,
   };
 }
 

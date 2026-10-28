@@ -149,6 +149,9 @@ pub struct SchematicListing {
     /// 只包含有投影（或解析失败文件）的实例；没有 `schematics/` 的版本不出现。
     instances: Vec<InstanceSchematics>,
     skipped: Vec<String>,
+    /// 还没设置游戏目录的实例数（`game_directory` 字段加入之前创建的）。
+    /// 这些实例扫不到任何东西，界面据此提示用户去设置。
+    missing_game_directory: usize,
 }
 
 /// 完整解码结果（预览数据）。
@@ -294,69 +297,24 @@ const ORIGIN_VERSION: &str = "version";
 
 /// 解析一个实例真正使用的游戏目录。
 ///
-/// 新记录的 `game_directory` 直接用。老记录（这个字段加入之前创建的实例）里
-/// 没有游戏目录，只有一个空的 `minecraft/`，所以按**版本名反查**：找到
-/// `versions/<该实例的版本>/` 真正存在的那个目录。
+/// 只认实例记录里的 `game_directory`：Aether 是独立启动器，不从别的启动器读
+/// 配置，也不扫描磁盘去猜哪个目录是游戏目录。
 ///
-/// 反查结果只用于本次读取，**不写进记录** —— 那是用户的文件，不该被一个猜测
-/// 改写。找不到时退回旧路径，行为与改动前一致。
+/// 老记录（这个字段加入之前创建的实例）没有游戏目录，退回 `root/minecraft`。
+/// 那种情况下投影会扫不到东西，界面会提示用户去设置游戏目录 —— 由用户明确
+/// 选一次，然后写进记录。
 pub(super) fn resolve_game_directory(instance: &GameInstance) -> PathBuf {
-    if instance.game_directory.is_some() {
-        return instance.effective_game_directory();
-    }
-
-    let version = instance.version.as_str();
-    let hints = launcher_game_directory_hints();
-    if let Some(found) = aether_storage::import::fallback::locate_game_directory_for_version(
-        version,
-        &hints,
-        &search_roots(),
-    ) {
-        return found;
-    }
-
     instance.effective_game_directory()
 }
 
-/// 启动器配置里记录的游戏目录（PCL2 的 `LaunchFolderSelect` 等），只当提示用。
-fn launcher_game_directory_hints() -> Vec<PathBuf> {
-    aether_storage::import::fallback::configured_game_directories(&pcl2_launcher_roots())
-}
-
-/// 可能装着 PCL2 配置的目录，按常见位置排列。
-fn pcl2_launcher_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for variable in ["APPDATA", "USERPROFILE", "LOCALAPPDATA"] {
-        let Ok(base) = std::env::var(variable) else {
-            continue;
-        };
-        let base = PathBuf::from(base);
-        for relative in ["PCL", "Desktop/PCL", "Desktop/启动器/PCL"] {
-            roots.push(
-                relative
-                    .split('/')
-                    .fold(base.clone(), |path, part| path.join(part)),
-            );
-        }
-    }
-    roots
-}
-
-/// 反查的搜索起点：用户目录本身。候选目录由 `fallback` 追加常见相对路径。
-fn search_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for variable in ["USERPROFILE", "APPDATA"] {
-        if let Ok(base) = std::env::var(variable) {
-            roots.push(PathBuf::from(base));
-        }
-    }
-    roots
+/// 这个实例的游戏目录是不是还没设置（老记录）。
+pub(super) fn missing_game_directory(instance: &GameInstance) -> bool {
+    instance.game_directory.is_none()
 }
 
 /// 收集一个实例要扫描的全部来源，按优先级从高到低。
 ///
-/// 游戏目录来自实例记录（新记录）或按版本名反查（老记录）；两者都只给出
-/// 用户自己的 `.minecraft`，前端从不参与。
+/// 游戏目录只来自实例记录；前端从不参与。
 fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
     let mut sources = vec![ScanSource {
         directory: instance.root.join("schematics"),
@@ -580,6 +538,11 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
         Ok(SchematicListing {
             instances,
             skipped: listing.skipped.iter().map(|s| s.id.clone()).collect(),
+            missing_game_directory: listing
+                .instances
+                .iter()
+                .filter(|instance| missing_game_directory(instance))
+                .count(),
         })
     })
     .await

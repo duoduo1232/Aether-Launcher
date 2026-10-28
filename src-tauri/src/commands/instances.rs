@@ -144,6 +144,58 @@ async fn pick_game_directory(app: &tauri::AppHandle) -> Result<Option<PathBuf>, 
         .transpose()
 }
 
+/// 给所有还没设置游戏目录的实例指定一个 `.minecraft`。
+///
+/// 这是老实例（`game_directory` 字段加入之前创建的）唯一的补救方式：Aether 不
+/// 从别的启动器读配置，也不猜路径，所以由用户在后端点一次目录选择框，把结果
+/// 写进每一条需要修的记录。
+///
+/// 写入前会把 `instance.json` 备份到 `<store>/instances/.backup-<时间戳>/`；
+/// 已经设置过游戏目录的实例不动。
+#[tauri::command]
+pub(crate) async fn set_game_directory_for_all_instances(
+    app: tauri::AppHandle,
+) -> Result<GameDirectoryReport, String> {
+    let root = instance_store_root(&app)?;
+    let Some(game_directory) = pick_game_directory(&app).await? else {
+        return Ok(GameDirectoryReport {
+            updated: 0,
+            skipped: 0,
+            failed: Vec::new(),
+            cancelled: true,
+        });
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        aether_storage::apply_game_directory(&root, &game_directory)
+            .map(Into::into)
+            .map_err(|error| format!("cannot set the game directory: {error}"))
+    })
+    .await
+    .map_err(|error| format!("game directory task failed: {error}"))?
+}
+
+/// 一次批量设置的结果。`cancelled` 为真时其余字段没有意义。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameDirectoryReport {
+    updated: usize,
+    skipped: usize,
+    failed: Vec<String>,
+    cancelled: bool,
+}
+
+impl From<aether_storage::GameDirectoryOutcome> for GameDirectoryReport {
+    fn from(outcome: aether_storage::GameDirectoryOutcome) -> Self {
+        Self {
+            updated: outcome.updated,
+            skipped: outcome.skipped,
+            failed: outcome.failed,
+            cancelled: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

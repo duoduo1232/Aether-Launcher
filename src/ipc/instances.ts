@@ -19,11 +19,13 @@ declare module "./call" {
   interface CommandArgs {
     list_instances: void;
     create_instance: { name: string; version: string };
+    set_game_directory_for_all_instances: void;
   }
 
   interface CommandResults {
     list_instances: InstanceListing;
     create_instance: InstanceSummary | null;
+    set_game_directory_for_all_instances: GameDirectoryReport;
   }
 }
 
@@ -51,6 +53,13 @@ export type InstanceListing = {
 export const emptyInstanceListing: InstanceListing = {
   instances: [],
   skipped: [],
+};
+
+export type GameDirectoryReport = {
+  updated: number;
+  skipped: number;
+  failed: string[];
+  cancelled: boolean;
 };
 
 export type CreateInstanceInput = {
@@ -83,4 +92,14 @@ export async function createInstance(
     name: input.name.trim(),
     version: input.version.trim(),
   });
+}
+
+/**
+ * 给所有还没设置游戏目录的实例指定一个 `.minecraft`。
+ *
+ * 目录由后端弹出选择框让用户挑，前端不传路径；取消时 `cancelled` 为真。
+ * 后端会在改写前备份 `instance.json`。
+ */
+export async function setGameDirectoryForAllInstances(): Promise<GameDirectoryReport> {
+  return callCommand("set_game_directory_for_all_instances");
 }

@@ -204,8 +204,7 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 - **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。
 - **三处来源都要扫**：Litematica 找投影看的是 `schematics/`，而游戏目录可能有三份 `schematics/` —— 游戏目录根上的、`versions/<版本>/schematics`（版本隔离）、以及实例私有目录。只扫其中一处就会出现「文件管理器里明明有一堆，界面是空的」。`scan_sources` 把三处都列出来，每份文件带 `origin`（`instance` / `game` / `version`）和 `originVersion`；同一相对路径出现在两个来源时是两份不同的文件，前端按来源分区渲染，不做合并。
 - **名字为空或 `Unnamed` 时回退到文件名**：很多投影的作者只填作者和方块数，`Metadata.Name` 留着 Litematica 的占位值 `Unnamed`。`display_name` 把空白和 `Unnamed`（大小写不敏感）都当成没填名字，用文件名去掉 `.litematic` 后显示。
-- **老实例按版本名反查游戏目录**：`game_directory` 字段加入之前创建的实例只有一个空的 `minecraft/`，游戏其实在用户的 `.minecraft` 里。`import::fallback::locate_game_directory_for_version` 按「候选目录的 `versions/<该实例的版本>/` 真正存在」来定位，优先用 PCL2 等启动器配置里记录的路径，其次查常见位置。反查结果**只用于本次读取，不写回记录**。本机 134 个老实例全部命中同一个 `.minecraft`，0 失败。启动和下载用同一个 `resolve_game_directory`，三者不会分叉。
-- **只列出有投影的版本**：`list_schematics` 跳过 `schematics/` 不存在或为空的实例，所以 134 个版本里只有真正放过投影的那几个会出现。解析失败的文件仍会带出来，归到所属版本的警告里。
+- **游戏目录只来自实例记录**：Aether 是独立启动器，不从 PCL2、HMCL 等别的启动器读配置，也不扫描磁盘猜路径。`GameInstance::game_directory` 是唯一来源，由后端在用户选目录时写入。老记录（这个字段加入之前创建的实例）没有它，因此扫不到任何东西；`list_schematics` 会报出 `missingGameDirectory` 数量，界面据此显示「设置游戏目录」入口，用户选一次后由 `apply_game_directory` 批量写回 —— 写前先把要改的 `instance.json` 备份到 `instances/.backup-<时间戳>/`，已经设置过的不动。
 - **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。
 
 | 命令 | 作用 |

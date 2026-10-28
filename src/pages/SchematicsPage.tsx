@@ -13,6 +13,7 @@ import {
   ClipboardPaste24Regular,
   Cube24Regular,
   FolderOpen24Regular,
+  Settings24Regular,
   Warning24Regular,
 } from "@fluentui/react-icons";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -36,6 +37,7 @@ import {
   listSchematics,
   pasteSchematic,
   readSchematic,
+  setGameDirectoryForAllInstances,
 } from "../ipc";
 import type {
   InstanceSchematics,
@@ -110,6 +112,33 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       ),
     [listing.instances],
   );
+
+  /** 老实例还没有游戏目录时，让用户选一次 `.minecraft`，后端写回并备份。 */
+  const handleSetGameDirectory = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      const report = await setGameDirectoryForAllInstances();
+      if (report.cancelled) {
+        return;
+      }
+      const parts = [`已为 ${report.updated} 个实例设置游戏目录`];
+      if (report.skipped > 0) {
+        parts.push(`${report.skipped} 个已有设置`);
+      }
+      if (report.failed.length > 0) {
+        parts.push(`${report.failed.length} 个失败`);
+      }
+      setNotice(parts.join("，"));
+      reload();
+      instancesQuery.reload();
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  }, [instancesQuery, reload]);
 
   const collapsedByInstance = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -400,6 +429,15 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
             >
               刷新
             </Button>
+            {listing.missingGameDirectory > 0 ? (
+              <Button
+                icon={<Settings24Regular />}
+                disabled={!desktop || busy}
+                onClick={() => void handleSetGameDirectory()}
+              >
+                设置游戏目录（{listing.missingGameDirectory}）
+              </Button>
+            ) : null}
           </div>
         }
       />

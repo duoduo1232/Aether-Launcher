@@ -104,6 +104,8 @@ export type SchematicListing = {
   /** 只包含有投影（或解析失败文件）的实例。 */
   instances: InstanceSchematics[];
   skipped: string[];
+  /** 还没设置游戏目录的实例数（老记录），它们扫不到任何投影。 */
+  missingGameDirectory: number;
 };
 
 /** 一个区域的解码结果；indices 按 (y·sizeZ + z)·sizeX + x 排列。 */
@@ -126,6 +128,7 @@ export type SchematicDetail = {
 export const emptySchematicListing: SchematicListing = {
   instances: [],
   skipped: [],
+  missingGameDirectory: 0,
 };
 
 /** 与后端一致的导入大小上限：16 MiB（更大的文件直接放进实例的目录即可）。 */
