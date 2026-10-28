@@ -4,15 +4,19 @@ use std::path::PathBuf;
 use aether_core::{GameInstance, InstanceId, InstanceState, VersionId};
 
 use super::{
-    FailedSchematic, MAX_RELATIVE_DEPTH, MAX_SCAN_ENTRIES, ScanResult, SchematicSummary,
-    collect_litematics, copy_one_schematic, scan_schematics, scan_sources, schematic_path,
-    unique_destination, validate_folder_path, validate_relative_path,
+    FailedSchematic, MAX_RELATIVE_DEPTH, MAX_SCAN_ENTRIES, SchematicSummary, collect_litematics,
+    copy_one_schematic, scan_directory, scan_sources, schematic_path, unique_destination,
+    validate_folder_path, validate_relative_path,
 };
 
 /// 按实例在当前磁盘上的来源跑一次扫描，返回拆分后的两个列表。
 fn scan_instance(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedSchematic>) {
-    let ScanResult { schematics, failed } = scan_schematics(&scan_sources(instance));
-    (schematics, failed)
+    let mut result = super::ScanResult::default();
+    for source in &scan_sources(instance) {
+        result.absorb(&scan_directory(source), source);
+    }
+    result.sort();
+    (result.schematics, result.failed)
 }
 
 #[test]

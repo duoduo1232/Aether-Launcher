@@ -394,45 +394,36 @@ fn game_sources(instance_root: &Path, game_root: &Path, versions: &[String]) -> 
     sources
 }
 
-/// 扫描一组来源目录，递归保留子文件夹结构。目录不存在视为没有投影；
+/// 扫描**一个**来源目录，递归保留子文件夹结构。目录不存在视为没有投影；
 /// 解析失败的文件按类别归入 `failed`，不中断扫描。
 ///
-/// `sources` 由调用方算好传进来（同一个游戏目录的实例共用一份），这里不再
-/// 枚举 `versions/`。
+/// 结果与实例无关，所以调用方可以按目录路径缓存，让上百个共用同一个
+/// `.minecraft` 的实例只遍历一次。
 ///
 /// # 为什么分两趟
 ///
 /// 遍历目录是 IO 串行的工作，解压头部是纯 CPU 的工作。先把待解析的文件收集
 /// 起来，再丢给线程池并行解析：本机 1723 个投影单线程 1.56 s，8 线程 0.50 s。
 /// 图省事在一个循环里做，就是用户看到的「卡加载」。
-fn scan_schematics(sources: &[ScanSource]) -> ScanResult {
+fn scan_directory(source: &ScanSource) -> DirectoryScan {
     let mut pending: Vec<PendingFile> = Vec::new();
     let mut failed = Vec::new();
     let mut budget = MAX_SCAN_ENTRIES;
-    for source in sources {
-        walk_schematics(source, "", 0, &mut budget, &mut pending, &mut failed);
-    }
+    walk_schematics(source, "", 0, &mut budget, &mut pending, &mut failed);
 
-    let mut summaries = parse_pending(pending, &mut failed);
+    let schematics = parse_pending(pending, &mut failed);
+    let mut scan = DirectoryScan { schematics, failed };
+    scan.sort();
+    scan
+}
 
-    // 相对路径在同一个来源里唯一；跨来源按来源顺序排在后面。
-    summaries.sort_by(|left, right| {
-        (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
-            &right.origin,
-            &right.origin_version,
-            &right.relative_path,
-        ))
-    });
-    failed.sort_by(|left, right| {
-        (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
-            &right.origin,
-            &right.origin_version,
-            &right.relative_path,
-        ))
-    });
-    ScanResult {
-        schematics: summaries,
-        failed,
+impl DirectoryScan {
+    /// 同一目录内的顺序：按相对路径，保证跨实例复用后顺序一致。
+    fn sort(&mut self) {
+        self.schematics
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        self.failed
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     }
 }
 
@@ -698,8 +689,12 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
 
         // 游戏目录 -> 该目录下 `versions/` 的目录名（只读一次盘）。
         let mut version_cache: HashMap<PathBuf, Vec<String>> = HashMap::new();
-        // 游戏目录 -> 那一刻的扫描结果；同一个目录只真正扫一次。
-        let mut scanned: HashMap<ScanKey, Arc<ScanResult>> = HashMap::new();
+        // 来源目录 -> 这一层扫出来的文件；同一个目录只遍历一次。
+        //
+        // **不能按实例或按游戏目录缓存整份结果**：共用同一个 `.minecraft` 的
+        // 实例来源几乎一样，但实例私有目录各不相同；按游戏目录缓存整份结果
+        // 会让 134 个实例全部显示同一份上千个投影。
+        let mut by_directory: HashMap<PathBuf, Arc<DirectoryScan>> = HashMap::new();
         let mut instances = Vec::new();
 
         for instance in &listing.instances {
@@ -709,29 +704,32 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
                 .or_insert_with(|| version_directories(&game_root));
             let sources = game_sources(&instance.root, &game_root, versions);
 
-            let key = ScanKey::of(instance);
-            let result = match scanned.get(&key) {
-                Some(cached) => Arc::clone(cached),
-                None => {
-                    let result = Arc::new(scan_schematics(&sources));
-                    scanned.insert(key, Arc::clone(&result));
-                    result
-                }
-            };
+            let mut result = ScanResult::default();
+            for source in &sources {
+                let scan = match by_directory.get(&source.directory) {
+                    Some(cached) => Arc::clone(cached),
+                    None => {
+                        let scan = Arc::new(scan_directory(source));
+                        by_directory.insert(source.directory.clone(), Arc::clone(&scan));
+                        scan
+                    }
+                };
+                result.absorb(&scan, source);
+            }
+            result.sort();
+
             if result.schematics.is_empty() && result.failed.is_empty() {
                 continue;
             }
             // 只报真正扫出内容的来源，避免把空目录也列出来。
             let labels = source_labels(&sources, &result.schematics, &result.failed);
-            // 共用同一个游戏目录的实例拿到的是同一份数据，只有最后一个真正
-            // 需要它的实例来 clone，前面的都只是读。
             instances.push(InstanceSchematics {
                 id: instance.id.to_string(),
                 name: instance.name.clone(),
                 version: instance.version.as_str().to_owned(),
                 state: state_label(&instance.state),
-                schematics: result.schematics.clone(),
-                failed: result.failed.clone(),
+                schematics: result.schematics,
+                failed: result.failed,
                 sources: labels,
             });
         }
@@ -749,26 +747,61 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
     .map_err(|_| "schematic listing task failed".to_owned())?
 }
 
-/// 一个扫描键对应的完整结果，多个实例共享同一份。
+/// 一个实例的扫描结果：它所有来源目录里的文件合起来。
+#[derive(Debug, Default)]
 struct ScanResult {
     schematics: Vec<SchematicSummary>,
     failed: Vec<FailedSchematic>,
 }
 
-/// 决定「这次扫描能不能复用上次结果」的键。
-///
-/// **只看游戏目录**：共用同一个 `.minecraft` 的实例，`versions/*/schematics`
-/// 完全相同，扫一次就够了。
-///
-/// 实例私有目录（`<root>/schematics`）各不相同，但它通常是空目录、代价只有一次
-/// 失败的 `read_dir`——比让键永不命中、把整个 `.minecraft` 重扫 134 遍便宜得多。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ScanKey(PathBuf);
-
-impl ScanKey {
-    fn of(instance: &GameInstance) -> Self {
-        Self(resolve_game_directory(instance))
+impl ScanResult {
+    /// 把一个**已扫描的目录**并入本实例的结果。
+    ///
+    /// 目录层的结果可以跨实例复用（键是目录路径），但 `origin` /
+    /// `originVersion` 是「这个目录属于哪个实例」的信息，不同实例可能不同
+    /// （比如两个实例的私有目录同一路径、或游戏目录配得不一样），所以
+    /// 拼接时逐条套用当前实例的来源标签，而不是直接搬用缓存里的。
+    fn absorb(&mut self, scan: &DirectoryScan, source: &ScanSource) {
+        self.schematics.extend(scan.schematics.iter().map(|item| {
+            let mut item = item.clone();
+            item.origin = source.origin;
+            item.origin_version = source.origin_version.clone();
+            item
+        }));
+        self.failed
+            .extend(scan.failed.iter().map(|item| FailedSchematic {
+                relative_path: item.relative_path.clone(),
+                file_name: item.file_name.clone(),
+                reason: item.reason,
+                origin: source.origin,
+                origin_version: source.origin_version.clone(),
+            }));
     }
+
+    /// 相对路径在同一个来源里唯一；跨来源按来源顺序排在后面。
+    fn sort(&mut self) {
+        self.schematics.sort_by(|left, right| {
+            (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
+                &right.origin,
+                &right.origin_version,
+                &right.relative_path,
+            ))
+        });
+        self.failed.sort_by(|left, right| {
+            (&left.origin, &left.origin_version, &left.relative_path).cmp(&(
+                &right.origin,
+                &right.origin_version,
+                &right.relative_path,
+            ))
+        });
+    }
+}
+
+/// 单个来源目录扫出来的原始文件，与实例无关，可以跨实例复用。
+#[derive(Debug, Default)]
+struct DirectoryScan {
+    schematics: Vec<SchematicSummary>,
+    failed: Vec<FailedSchematic>,
 }
 
 /// 读取并完整解码指定实例里的一个投影文件，返回预览数据。

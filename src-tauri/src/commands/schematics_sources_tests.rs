@@ -10,17 +10,21 @@ use std::path::{Path, PathBuf};
 use aether_core::{GameInstance, InstanceId, InstanceState, VersionId};
 
 use super::{
-    FailedSchematic, ORIGIN_GAME, ORIGIN_INSTANCE, ORIGIN_VERSION, ScanResult, SchematicSummary,
-    display_name, scan_schematics, scan_sources,
+    FailedSchematic, ORIGIN_GAME, ORIGIN_INSTANCE, ORIGIN_VERSION, SchematicSummary, display_name,
+    scan_directory, scan_sources,
 };
 
 /// 按实例在当前磁盘上的来源跑一次扫描，返回拆分后的两个列表。
 ///
-/// 生产路径（`list_schematics`）会缓存 `versions/` 的枚举，这里不缓存 ——
-/// 测试关心的是「给定磁盘状态，扫出什么」。
+/// 复刻 `list_schematics` 的拼接逻辑（按来源目录逐个扫描再合并），但不带
+/// 跨实例缓存 —— 测试关心的是「给定磁盘状态，这个实例看到什么」。
 fn scan_instance(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedSchematic>) {
-    let ScanResult { schematics, failed } = scan_schematics(&scan_sources(instance));
-    (schematics, failed)
+    let mut result = super::ScanResult::default();
+    for source in &scan_sources(instance) {
+        result.absorb(&scan_directory(source), source);
+    }
+    result.sort();
+    (result.schematics, result.failed)
 }
 
 fn instance_with_root(root: PathBuf) -> GameInstance {
@@ -219,39 +223,89 @@ fn display_name_falls_back_when_the_metadata_name_is_a_placeholder() {
 }
 
 #[test]
-fn the_scan_key_collapses_instances_that_share_a_game_directory() {
-    // 本机 134 个实例都指向同一个 .minecraft。如果键里带上实例目录，缓存永远
-    // 不会命中，页面上就是「一直加载」——这条测试钉住那个回归。
-    let root = temp_root("scan-key");
+fn instances_sharing_a_game_directory_only_see_their_own_sources() {
+    // 回归测试。上一版把「扫描结果」按游戏目录缓存，结果共用同一个
+    // `.minecraft` 的实例全部显示同一份上千个投影 —— 每个实例都长一样。
+    //
+    // 缓存必须落在**来源目录**这一层：`versions/<a>/schematics` 该由 a 看到、
+    // `versions/<b>/schematics` 该由 b 看到，共享的只有游戏目录根上的
+    // `schematics/`。
+    let root = temp_root("shared-game");
     let game = root.join("game");
-    fs::create_dir_all(game.join("versions")).expect("game");
+    fs::create_dir_all(game.join("versions").join("a").join("schematics")).expect("a");
+    fs::create_dir_all(game.join("versions").join("b").join("schematics")).expect("b");
+    fs::create_dir_all(game.join("schematics")).expect("shared");
 
-    let shared_versions: Vec<super::ScanKey> = (0..5)
-        .map(|index| {
-            let mut instance = instance_with_root(root.join(format!("instance-{index}")));
-            instance.game_directory = Some(game.clone());
-            super::ScanKey::of(&instance)
-        })
-        .collect();
-
-    // 5 个不同实例、同一个游戏目录：必须归并成 1 个键。
-    let unique: std::collections::HashSet<_> = shared_versions.iter().collect();
-    assert_eq!(
-        unique.len(),
-        1,
-        "instances sharing a directory must share one key"
+    write_litematic(&game.join("schematics").join("公共.litematic"), "公共");
+    write_litematic(
+        &game
+            .join("versions")
+            .join("a")
+            .join("schematics")
+            .join("甲的.litematic"),
+        "甲的",
+    );
+    write_litematic(
+        &game
+            .join("versions")
+            .join("b")
+            .join("schematics")
+            .join("乙的.litematic"),
+        "乙的",
     );
 
-    // 指向别的游戏目录的实例仍然是不同的键。
-    let other = root.join("other-game");
-    fs::create_dir_all(other.join("versions")).expect("other game");
-    let mut other_instance = instance_with_root(root.join("instance-other"));
-    other_instance.game_directory = Some(other);
-    assert_ne!(
-        super::ScanKey::of(&other_instance),
-        **unique.iter().next().expect("one key"),
-        "a different game directory must not reuse the cache"
+    let mut instance_a = instance_with_root(root.join("instance-a"));
+    instance_a.game_directory = Some(game.clone());
+    let mut instance_b = instance_with_root(root.join("instance-b"));
+    instance_b.game_directory = Some(game.clone());
+
+    let (a, _) = scan_instance(&instance_a);
+    let (b, _) = scan_instance(&instance_b);
+    let names = |items: &[SchematicSummary]| {
+        let mut names: Vec<String> = items.iter().map(|item| item.file_name.clone()).collect();
+        names.sort();
+        names
+    };
+
+    // 同一个游戏目录，`versions/` 是全量的：两个实例都能看到根上的公共投影，
+    // 以及所有版本的 schematics。这正是 PCL2 之类版本的可见范围。
+    assert_eq!(names(&a), names(&b));
+    assert!(names(&a).contains(&"公共.litematic".to_owned()));
+
+    // 实例私有的 schematics 只属于自己，不能串到别的实例上。
+    write_litematic(
+        &root
+            .join("instance-a")
+            .join("schematics")
+            .join("只给甲.litematic"),
+        "只给甲",
     );
+    let (a, _) = scan_instance(&instance_a);
+    let (b, _) = scan_instance(&instance_b);
+    assert!(names(&a).contains(&"只给甲.litematic".to_owned()));
+    assert!(!names(&b).contains(&"只给甲.litematic".to_owned()));
+
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn a_directory_scan_does_not_carry_the_instances_origin_labels() {
+    // 目录层缓存可以跨实例复用，但 `origin` / `originVersion` 描述的是
+    // 「这个目录属于哪个实例」，必须由 `absorb` 逐条重新套用，不能沿用缓存。
+    let root = temp_root("absorb");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("schematics")).expect("shared");
+    write_litematic(&game.join("schematics").join("公共.litematic"), "公共");
+
+    let mut instance = instance_with_root(root.join("instance"));
+    instance.game_directory = Some(game.clone());
+    let (summaries, _) = scan_instance(&instance);
+    let item = summaries
+        .iter()
+        .find(|item| item.file_name == "公共.litematic")
+        .expect("schematic");
+    assert_eq!(item.origin, ORIGIN_GAME);
+    assert_eq!(item.origin_version, "");
 
     fs::remove_dir_all(root).expect("cleanup");
 }
