@@ -298,3 +298,52 @@ fn copy_one_schematic_rejects_a_file_that_is_not_a_litematic() {
     fs::remove_dir_all(source).expect("cleanup");
     fs::remove_dir_all(destination).expect("cleanup");
 }
+
+#[test]
+fn resolving_a_file_honours_its_source_directory() {
+    // 回归测试：读取/删除曾经一律按「实例私有 schematics」定位，于是双击
+    // 版本目录里的投影必然报 `cannot inspect schematic file`。
+    let root = temp_root("resolve-source");
+    let game = root.join("game");
+    let version_dir = game.join("versions").join("生电-1.21.4").join("schematics");
+    fs::create_dir_all(version_dir.join("建筑")).expect("mkdir");
+    let nested = version_dir.join("建筑").join("空城计.litematic");
+
+    let mut instance = instance_with_root(root.join("instance"));
+    instance.game_directory = Some(game.clone());
+
+    let resolved = super::resolve_existing_path(
+        &instance,
+        super::ORIGIN_VERSION,
+        "生电-1.21.4",
+        "建筑/空城计.litematic",
+    )
+    .expect("resolve");
+    assert_eq!(resolved, nested);
+
+    // 游戏目录根上的来源。
+    let shared = super::resolve_existing_path(&instance, super::ORIGIN_GAME, "", "a.litematic")
+        .expect("resolve shared");
+    assert_eq!(shared, game.join("schematics").join("a.litematic"));
+
+    // 实例私有来源。
+    let own = super::resolve_existing_path(&instance, super::ORIGIN_INSTANCE, "", "b.litematic")
+        .expect("resolve own");
+    assert_eq!(
+        own,
+        root.join("instance").join("schematics").join("b.litematic")
+    );
+
+    // 未知来源、以及试图用版本名穿越目录的请求都要被拒绝。
+    assert!(super::resolve_existing_path(&instance, "elsewhere", "", "c.litematic").is_err());
+    assert!(
+        super::resolve_existing_path(&instance, super::ORIGIN_VERSION, "..", "c.litematic")
+            .is_err()
+    );
+    assert!(
+        super::resolve_existing_path(&instance, super::ORIGIN_VERSION, "a/../../b", "c.litematic")
+            .is_err()
+    );
+
+    fs::remove_dir_all(root).expect("cleanup");
+}

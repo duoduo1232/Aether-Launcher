@@ -233,12 +233,63 @@ fn validate_folder_path(folder: &str) -> Result<(), String> {
 }
 
 /// 把相对路径拼到实例的 `schematics/` 下。逐段 push，不依赖平台分隔符。
+///
+/// **只用于写入**（导入、粘贴）：新文件一律落在实例自己的目录里。
 fn schematic_path(instance: &GameInstance, relative: &str) -> PathBuf {
-    let mut path = instance.root.join("schematics");
+    join_relative(&instance.root.join("schematics"), relative)
+}
+
+/// 读/删用：按文件**实际所属的来源**定位，而不是一律当成实例私有目录。
+///
+/// 列表里的每个文件都带 `origin` / `originVersion`。忽略它们就会去找
+/// `<实例>/schematics/...`，而文件其实在 `<游戏目录>/versions/<版本>/schematics/...`，
+/// 于是一双击预览就报「cannot inspect schematic file」。
+///
+/// `origin` 只接受已知的三种取值，`originVersion` 必须是单个安全路径段，
+/// 拼出来的路径还必须仍在该来源目录之内 —— 前端永远不能借此读到别处。
+fn resolve_existing_path(
+    instance: &GameInstance,
+    origin: &str,
+    origin_version: &str,
+    relative: &str,
+) -> Result<PathBuf, String> {
+    let base = match origin {
+        ORIGIN_INSTANCE => instance.root.join("schematics"),
+        ORIGIN_GAME => resolve_game_directory(instance).join("schematics"),
+        ORIGIN_VERSION => {
+            if !is_single_segment(origin_version) {
+                return Err("invalid version name".to_owned());
+            }
+            resolve_game_directory(instance)
+                .join("versions")
+                .join(origin_version)
+                .join("schematics")
+        }
+        _ => return Err("unknown schematic source".to_owned()),
+    };
+    Ok(join_relative(&base, relative))
+}
+
+/// 逐段拼接，拒绝空段、`.`、`..`（`validate_relative_path` 已经查过，
+/// 这里再守一次，避免调用方漏掉校验）。
+fn join_relative(base: &Path, relative: &str) -> PathBuf {
+    let mut path = base.to_path_buf();
     for segment in relative.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            continue;
+        }
         path.push(segment);
     }
     path
+}
+
+/// 版本目录名必须是单个安全路径段。
+fn is_single_segment(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':'])
+        && !name.contains("..")
 }
 
 fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
@@ -827,11 +878,16 @@ struct DirectoryScan {
 }
 
 /// 读取并完整解码指定实例里的一个投影文件，返回预览数据。
+///
+/// `origin` / `originVersion` 必须与列表里那一项一致：文件可能位于实例私有
+/// 目录、游戏目录根或某个版本目录下，后端据此定位（见 [`resolve_existing_path`]）。
 #[tauri::command]
 pub(crate) async fn read_schematic(
     app: tauri::AppHandle,
     instance_id: String,
     relative_path: String,
+    origin: String,
+    origin_version: String,
 ) -> Result<SchematicDetail, String> {
     validate_relative_path(&relative_path, true)?;
     let id = InstanceId::parse(&instance_id).map_err(|_| "invalid instance ID".to_owned())?;
@@ -842,7 +898,8 @@ pub(crate) async fn read_schematic(
         let instance = store
             .load(id)
             .map_err(|_| "instance not found in the managed store".to_owned())?;
-        let bytes = read_capped(&schematic_path(&instance, &relative_path))?;
+        let path = resolve_existing_path(&instance, &origin, &origin_version, &relative_path)?;
+        let bytes = read_capped(&path)?;
         let schematic = parse(&bytes).map_err(|error| error.to_string())?;
         let file_name = relative_path
             .rsplit('/')
@@ -1063,11 +1120,16 @@ fn copy_one_schematic(
 }
 
 /// 删除指定实例里的一个投影文件。
+///
+/// 与读取一样按 `origin` 定位：用户在界面上看到的是哪个来源的文件，删的就是
+/// 那个来源的那个文件。
 #[tauri::command]
 pub(crate) async fn delete_schematic(
     app: tauri::AppHandle,
     instance_id: String,
     relative_path: String,
+    origin: String,
+    origin_version: String,
 ) -> Result<(), String> {
     validate_relative_path(&relative_path, true)?;
     let id = InstanceId::parse(&instance_id).map_err(|_| "invalid instance ID".to_owned())?;
@@ -1078,7 +1140,8 @@ pub(crate) async fn delete_schematic(
         let instance = store
             .load(id)
             .map_err(|_| "instance not found in the managed store".to_owned())?;
-        match fs::remove_file(schematic_path(&instance, &relative_path)) {
+        let path = resolve_existing_path(&instance, &origin, &origin_version, &relative_path)?;
+        match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Err("schematic not found".to_owned())
@@ -1094,11 +1157,17 @@ pub(crate) async fn delete_schematic(
 ///
 /// 源和目标可以是同一个实例（整理目录），也可以是不同实例（跨版本共享）。
 /// 目标已有同名文件时自动改名成 `名字 (2).litematic`，不覆盖已有投影。
+///
+/// 参数多是因为 Tauri 命令的参数就是 IPC 契约：源（实例 + 相对路径 + 来源）
+/// 和目标（实例 + 文件夹 + 模式）分开传，比塞一个嵌套结构更直接。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(crate) async fn paste_schematic(
     app: tauri::AppHandle,
     from_instance_id: String,
     from_path: String,
+    from_origin: String,
+    from_origin_version: String,
     to_instance_id: String,
     to_folder: String,
     move_file: bool,
@@ -1119,7 +1188,14 @@ pub(crate) async fn paste_schematic(
             .load(to)
             .map_err(|_| "target instance not found in the managed store".to_owned())?;
 
-        let source = schematic_path(&source_instance, &from_path);
+        // 源可能来自游戏目录或某个版本目录；目标**永远**是实例自己的目录，
+        // 这样粘贴只会往实例里加文件，不会改动共享的游戏目录。
+        let source = resolve_existing_path(
+            &source_instance,
+            &from_origin,
+            &from_origin_version,
+            &from_path,
+        )?;
         let bytes = read_capped(&source)?;
 
         let target_directory = if to_folder.is_empty() {

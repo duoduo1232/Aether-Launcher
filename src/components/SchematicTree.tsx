@@ -23,7 +23,7 @@ import {
 import { useState } from "react";
 import type { SchematicSummary } from "../ipc";
 import type { SchematicFolderNode } from "../lib/schematicTree";
-import { collectFilePaths } from "../lib/schematicTree";
+import { collectFiles } from "../lib/schematicTree";
 
 /// 根目录首次渲染的文件数上限；每次点「继续显示」再加这么多。
 const ROOT_FILE_PAGE = 100;
@@ -41,6 +41,8 @@ export type SchematicTreeProps = {
   selectionMode: boolean;
   /** 已选中的相对路径（只属于当前实例）。 */
   selected: ReadonlySet<string>;
+  /** 已选中的条目本身；批量操作要用它们各自的来源。 */
+  selectedItems: SchematicSummary[];
   /**
    * 被用户**展开**的文件夹路径；默认全部折叠。
    *
@@ -51,13 +53,13 @@ export type SchematicTreeProps = {
   /** 剪贴板里有内容，可以粘贴。 */
   clipboardReady: boolean;
   onToggleFolder: (path: string) => void;
-  onToggleSelect: (path: string) => void;
+  onToggleSelect: (item: SchematicSummary) => void;
   onPreview: (item: SchematicSummary) => void;
-  onCopy: (paths: string[], move: boolean) => void;
+  onCopy: (items: SchematicSummary[], move: boolean) => void;
   onPaste: (folder: string) => void;
-  onDelete: (paths: string[]) => void;
-  onStartSelection: (path: string) => void;
-  onSelectAll: (paths: string[]) => void;
+  onDelete: (items: SchematicSummary[]) => void;
+  onStartSelection: (item: SchematicSummary) => void;
+  onSelectAll: (items: SchematicSummary[]) => void;
 };
 
 export function SchematicTree(props: SchematicTreeProps) {
@@ -110,7 +112,7 @@ type FolderBranchProps = SchematicTreeProps & {
 function FolderBranch({ node, depth, ...props }: FolderBranchProps) {
   // 默认折叠：展开是用户显式动作，只记展开的那些。
   const open = props.expandedFolders.has(node.path);
-  const files = collectFilePaths(node);
+  const files = collectFiles(node);
   return (
     <li className="schematic-branch-item">
       <Menu openOnContext>
@@ -164,9 +166,9 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
   const checked = props.selected.has(item.relativePath);
   // 右键作用于整个选择集，除非点的文件不在选择集里。
   const targets =
-    props.selectionMode && checked && props.selected.size > 0
-      ? [...props.selected]
-      : [item.relativePath];
+    props.selectionMode && checked && props.selectedItems.length > 0
+      ? props.selectedItems
+      : [item];
   return (
     <li className="schematic-branch-item">
       <Menu openOnContext>
@@ -179,7 +181,7 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
             aria-label={item.metadata.name || item.fileName}
             onClick={() =>
               props.selectionMode
-                ? props.onToggleSelect(item.relativePath)
+                ? props.onToggleSelect(item)
                 : props.onPreview(item)
             }
             onKeyDown={(event) => {
@@ -188,7 +190,7 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
               }
               event.preventDefault();
               if (props.selectionMode) {
-                props.onToggleSelect(item.relativePath);
+                props.onToggleSelect(item);
               } else {
                 props.onPreview(item);
               }
@@ -200,7 +202,7 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
                 className="schematic-check"
                 checked={checked}
                 aria-label={`选择 ${item.fileName}`}
-                onChange={() => props.onToggleSelect(item.relativePath)}
+                onChange={() => props.onToggleSelect(item)}
                 onClick={(event) => event.stopPropagation()}
               />
             ) : (
@@ -242,7 +244,7 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
             <MenuItem
               icon={<CheckboxChecked24Regular />}
               disabled={props.busy}
-              onClick={() => props.onStartSelection(item.relativePath)}
+              onClick={() => props.onStartSelection(item)}
             >
               多选
             </MenuItem>

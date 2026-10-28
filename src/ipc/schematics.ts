@@ -16,13 +16,25 @@ import type { InstanceState } from "./instances";
 declare module "./call" {
   interface CommandArgs {
     list_schematics: void;
-    read_schematic: { instanceId: string; relativePath: string };
+    read_schematic: {
+      instanceId: string;
+      relativePath: string;
+      origin: string;
+      originVersion: string;
+    };
     import_schematic: { instanceId: string; fileName: string; bytes: number[] };
     import_schematic_folder: { instanceId: string };
-    delete_schematic: { instanceId: string; relativePath: string };
+    delete_schematic: {
+      instanceId: string;
+      relativePath: string;
+      origin: string;
+      originVersion: string;
+    };
     paste_schematic: {
       fromInstanceId: string;
       fromPath: string;
+      fromOrigin: string;
+      fromOriginVersion: string;
       toInstanceId: string;
       toFolder: string;
       moveFile: boolean;
@@ -144,8 +156,15 @@ export async function listSchematics(): Promise<SchematicListing> {
 export async function readSchematic(
   instanceId: string,
   relativePath: string,
+  origin: SchematicOrigin,
+  originVersion: string,
 ): Promise<SchematicDetail> {
-  return callCommand("read_schematic", { instanceId, relativePath });
+  return callCommand("read_schematic", {
+    instanceId,
+    relativePath,
+    origin,
+    originVersion,
+  });
 }
 
 /** 把文件内容导入指定实例的 `schematics/` 根目录。浏览器预览会 reject。 */
@@ -187,8 +206,15 @@ export async function importSchematicFolder(
 export async function deleteSchematic(
   instanceId: string,
   relativePath: string,
+  origin: SchematicOrigin,
+  originVersion: string,
 ): Promise<void> {
-  await callCommand("delete_schematic", { instanceId, relativePath });
+  await callCommand("delete_schematic", {
+    instanceId,
+    relativePath,
+    origin,
+    originVersion,
+  });
 }
 
 /**
@@ -201,6 +227,8 @@ export async function deleteSchematic(
 export async function pasteSchematic(
   fromInstanceId: string,
   fromPath: string,
+  fromOrigin: SchematicOrigin,
+  fromOriginVersion: string,
   toInstanceId: string,
   toFolder: string,
   moveFile: boolean,
@@ -208,6 +236,8 @@ export async function pasteSchematic(
   return callCommand("paste_schematic", {
     fromInstanceId,
     fromPath,
+    fromOrigin,
+    fromOriginVersion,
     toInstanceId,
     toFolder,
     moveFile,

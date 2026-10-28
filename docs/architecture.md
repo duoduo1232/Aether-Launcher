@@ -230,7 +230,9 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 `paste_schematic` 同时覆盖「同版本内整理目录」和「跨版本共享」：源和目标可以是同一个实例。目标已有同名文件时自动改名成 `名字 (2).litematic`，不覆盖已有投影；`moveFile` 为真时写完再删源。写入一律先落 `.staging-*` 临时文件再原子改名，避免半截文件被当成可解析的投影。
 
-前端一次只在一个版本里多选，避免跨版本批量操作的语义含糊；剪贴板只记实例 ID 和相对路径，粘贴时才真正落盘。
+前端一次只在一个版本里多选，避免跨版本批量操作的语义含糊；剪贴板记的是「相对路径 + 来源」（`origin` / `originVersion`），粘贴时才真正落盘。
+
+**读、删、粘贴的源都按来源定位。** `read_schematic` / `delete_schematic` / `paste_schematic` 都接收 `origin` 与 `originVersion`，由 `resolve_existing_path` 换算成真实路径：`instance` → `<实例目录>/schematics`，`game` → `<游戏目录>/schematics`，`version` → `<游戏目录>/versions/<版本>/schematics`。只按相对路径拼到实例私有目录是错的 —— 文件实际在版本目录里，双击预览就会报 `cannot inspect schematic file`。`originVersion` 必须是单个安全路径段，未知的 `origin` 直接拒绝。**写入方向不受影响**：导入和粘贴的目标永远是实例私有目录，绝不改写共享的游戏目录。
 
 ## 还没有的部分
 

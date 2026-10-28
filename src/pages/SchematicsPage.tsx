@@ -43,6 +43,7 @@ import type {
   InstanceSchematics,
   InstanceSummary,
   SchematicDetail,
+  SchematicOrigin,
   SchematicSummary,
 } from "../ipc";
 import { useQuery } from "../lib/query";
@@ -54,13 +55,34 @@ type SchematicsPageProps = {
   page: PageDefinition;
 };
 
+/**
+ * 一个投影的定位：相对路径 **加上** 它所属的来源。
+ *
+ * 同一个 `relativePath` 在三个来源里可能都存在，所以只带路径是不够的 ——
+ * 后端据此找到磁盘上真正的那一个文件。
+ */
+type SchematicRef = {
+  relativePath: string;
+  origin: SchematicOrigin;
+  originVersion: string;
+};
+
 /** 多选状态：一次只在一个版本里选，避免跨版本批量操作把语义搞混。 */
-type Selection = { instanceId: string; paths: Set<string> };
+type Selection = { instanceId: string; items: SchematicRef[] };
 
 /** 剪贴板：复制或剪切了哪些投影，粘贴时按 `move` 决定要不要删源。 */
-type Clipboard = { instanceId: string; paths: string[]; move: boolean };
+type Clipboard = { instanceId: string; items: SchematicRef[]; move: boolean };
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
+
+/** 从列表项取出定位信息，丢掉落库用的元数据。 */
+function refOf(item: SchematicSummary): SchematicRef {
+  return {
+    relativePath: item.relativePath,
+    origin: item.origin,
+    originVersion: item.originVersion,
+  };
+}
 
 /**
  * 投影图页。
@@ -230,7 +252,14 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       setError(null);
       setBusy(true);
       try {
-        setDetail(await readSchematic(instanceId, item.relativePath));
+        setDetail(
+          await readSchematic(
+            instanceId,
+            item.relativePath,
+            item.origin,
+            item.originVersion,
+          ),
+        );
       } catch (caught) {
         setDetail(null);
         setError(describeError(caught));
@@ -242,11 +271,11 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   );
 
   const handleCopy = useCallback(
-    (instanceId: string, paths: string[], move: boolean) => {
+    (instanceId: string, items: SchematicRef[], move: boolean) => {
       setError(null);
-      setClipboard({ instanceId, paths, move });
+      setClipboard({ instanceId, items, move });
       setNotice(
-        `已${move ? "剪切" : "复制"} ${paths.length} 个投影。右键目标文件夹选「粘贴到此处」，或点版本标题上的「粘贴到根目录」。`,
+        `已${move ? "剪切" : "复制"} ${items.length} 个投影。右键目标文件夹选「粘贴到此处」，或在版本标题上点「粘贴」。`,
       );
     },
     [],
@@ -262,11 +291,13 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       setBusy(true);
       const failures: string[] = [];
       let done = 0;
-      for (const path of clipboard.paths) {
+      for (const item of clipboard.items) {
         try {
           await pasteSchematic(
             clipboard.instanceId,
-            path,
+            item.relativePath,
+            item.origin,
+            item.originVersion,
             instanceId,
             folder,
             clipboard.move,
@@ -295,8 +326,9 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   );
 
   const handleDelete = useCallback(
-    async (instanceId: string, paths: string[]) => {
-      const label = paths.length === 1 ? `「${paths[0]}」` : `这 ${paths.length} 个投影`;
+    async (instanceId: string, items: SchematicRef[]) => {
+      const label =
+        items.length === 1 ? `「${items[0].relativePath}」` : `这 ${items.length} 个投影`;
       if (!window.confirm(`确定删除${label}吗？此操作无法撤销。`)) {
         return;
       }
@@ -305,9 +337,14 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       setBusy(true);
       const failures: string[] = [];
       let done = 0;
-      for (const path of paths) {
+      for (const item of items) {
         try {
-          await deleteSchematic(instanceId, path);
+          await deleteSchematic(
+            instanceId,
+            item.relativePath,
+            item.origin,
+            item.originVersion,
+          );
           done += 1;
         } catch (caught) {
           failures.push(describeError(caught));
@@ -322,7 +359,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
         setDetail((previous) =>
           previous &&
           previous.instanceId === instanceId &&
-          paths.includes(previous.relativePath)
+          items.some((item) => item.relativePath === previous.relativePath)
             ? null
             : previous,
         );
@@ -346,30 +383,32 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     });
   }, []);
 
-  const toggleSelect = useCallback((instanceId: string, path: string) => {
+  const toggleSelect = useCallback((instanceId: string, item: SchematicRef) => {
     setSelection((previous) => {
       if (!previous || previous.instanceId !== instanceId) {
-        return { instanceId, paths: new Set([path]) };
+        return { instanceId, items: [item] };
       }
-      const paths = new Set(previous.paths);
-      if (paths.has(path)) {
-        paths.delete(path);
-      } else {
-        paths.add(path);
-      }
-      return paths.size === 0 ? null : { instanceId, paths };
+      const exists = previous.items.some(
+        (existing) => existing.relativePath === item.relativePath,
+      );
+      const items = exists
+        ? previous.items.filter(
+            (existing) => existing.relativePath !== item.relativePath,
+          )
+        : [...previous.items, item];
+      return items.length === 0 ? null : { instanceId, items };
     });
   }, []);
 
-  const startSelection = useCallback((instanceId: string, path: string) => {
-    setSelection({ instanceId, paths: new Set([path]) });
+  const startSelection = useCallback((instanceId: string, item: SchematicRef) => {
+    setSelection({ instanceId, items: [item] });
   }, []);
 
-  const selectAll = useCallback((instanceId: string, paths: string[]) => {
-    setSelection(paths.length === 0 ? null : { instanceId, paths: new Set(paths) });
+  const selectAll = useCallback((instanceId: string, items: SchematicRef[]) => {
+    setSelection(items.length === 0 ? null : { instanceId, items });
   }, []);
 
-  const selectedPaths = selection ? [...selection.paths] : [];
+  const selectedItems = selection ? [...selection.items] : [];
 
   return (
     <>
@@ -469,8 +508,8 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       {clipboard ? (
         <section className="status-panel schematic-clipboard" aria-label="剪贴板">
           <Text>
-            已{clipboard.move ? "剪切" : "复制"} {clipboard.paths.length} 个投影
-            {clipboard.paths.length === 1 ? `：${clipboard.paths[0]}` : ""}
+            已{clipboard.move ? "剪切" : "复制"} {clipboard.items.length} 个投影
+            {clipboard.items.length === 1 ? `：${clipboard.items[0].relativePath}` : ""}
           </Text>
           <Button size="small" disabled={busy} onClick={() => setClipboard(null)}>
             取消
@@ -480,26 +519,26 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
 
       {selection ? (
         <section className="status-panel schematic-clipboard" aria-label="多选操作">
-          <Text>已选 {selection.paths.size} 项</Text>
+          <Text>已选 {selection.items.length} 项</Text>
           <div className="toolbar-actions">
             <Button
               size="small"
               disabled={busy}
-              onClick={() => handleCopy(selection.instanceId, selectedPaths, false)}
+              onClick={() => handleCopy(selection.instanceId, selectedItems, false)}
             >
               复制
             </Button>
             <Button
               size="small"
               disabled={busy}
-              onClick={() => handleCopy(selection.instanceId, selectedPaths, true)}
+              onClick={() => handleCopy(selection.instanceId, selectedItems, true)}
             >
               剪切
             </Button>
             <Button
               size="small"
               disabled={busy}
-              onClick={() => handleDelete(selection.instanceId, selectedPaths)}
+              onClick={() => handleDelete(selection.instanceId, selectedItems)}
             >
               删除
             </Button>
@@ -536,7 +575,24 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
               clipboardReady={clipboard !== null}
               selectionMode={selection?.instanceId === instance.id}
               selected={
-                selection?.instanceId === instance.id ? selection.paths : EMPTY_SET
+                selection?.instanceId === instance.id
+                  ? new Set(selection.items.map((item) => item.relativePath))
+                  : EMPTY_SET
+              }
+              // 树的批量操作需要完整条目，从本实例列出的文件里按路径取回。
+              selectedItems={
+                selection?.instanceId === instance.id
+                  ? selection.items
+                      .map((picked) =>
+                        instance.schematics.find(
+                          (file) =>
+                            file.relativePath === picked.relativePath &&
+                            file.origin === picked.origin &&
+                            file.originVersion === picked.originVersion,
+                        ),
+                      )
+                      .filter((file): file is SchematicSummary => file !== undefined)
+                  : []
               }
               expandedFolders={
                 expandedByInstance.get(instance.id) ?? EMPTY_SET
@@ -550,12 +606,30 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
               onImport={() => handleImportClick(instance.id)}
               onPaste={(folder) => handlePaste(instance.id, folder)}
               onToggleFolder={(path) => toggleFolder(instance.id, path)}
-              onToggleSelect={(path) => toggleSelect(instance.id, path)}
-              onStartSelection={(path) => startSelection(instance.id, path)}
-              onSelectAll={(paths) => selectAll(instance.id, paths)}
+              onToggleSelect={(item) => toggleSelect(instance.id, refOf(item))}
+              onStartSelection={(item) =>
+                startSelection(instance.id, refOf(item))
+              }
+              onSelectAll={(items) =>
+                selectAll(
+                  instance.id,
+                  items.map((item) => refOf(item)),
+                )
+              }
               onPreview={(item) => handlePreview(instance.id, item)}
-              onCopy={(paths, move) => handleCopy(instance.id, paths, move)}
-              onDelete={(paths) => handleDelete(instance.id, paths)}
+              onCopy={(items, move) =>
+                handleCopy(
+                  instance.id,
+                  items.map((item) => refOf(item)),
+                  move,
+                )
+              }
+              onDelete={(items) =>
+                handleDelete(
+                  instance.id,
+                  items.map((item) => refOf(item)),
+                )
+              }
             />
           ))}
 
@@ -597,17 +671,19 @@ type VersionPanelProps = {
   clipboardReady: boolean;
   selectionMode: boolean;
   selected: ReadonlySet<string>;
+  /** 已选中的条目；批量操作要带各自的来源。 */
+  selectedItems: SchematicSummary[];
   expandedFolders: ReadonlySet<string>;
   onToggleVersion: () => void;
   onImport: () => void;
   onPaste: (folder: string) => void;
   onToggleFolder: (path: string) => void;
-  onToggleSelect: (path: string) => void;
-  onStartSelection: (path: string) => void;
-  onSelectAll: (paths: string[]) => void;
+  onToggleSelect: (item: SchematicSummary) => void;
+  onStartSelection: (item: SchematicSummary) => void;
+  onSelectAll: (items: SchematicSummary[]) => void;
   onPreview: (item: SchematicSummary) => void;
-  onCopy: (paths: string[], move: boolean) => void;
-  onDelete: (paths: string[]) => void;
+  onCopy: (items: SchematicSummary[], move: boolean) => void;
+  onDelete: (items: SchematicSummary[]) => void;
 };
 
 function VersionPanel({
@@ -618,6 +694,7 @@ function VersionPanel({
   clipboardReady,
   selectionMode,
   selected,
+  selectedItems,
   expandedFolders,
   onToggleVersion,
   onImport,
@@ -640,19 +717,26 @@ function VersionPanel({
           aria-label={`${instance.name}（${instance.version}）`}
           onClick={onToggleVersion}
         >
+          {/* 实例名和版本号常常是同一个字符串（`1.10.2` / `1.10.2`），
+              重复显示成两个徽章只会让人以为列表里有两个一样的东西。 */}
           <span className="schematic-version-name">{instance.name}</span>
-          <Badge appearance="tint">{instance.version}</Badge>
+          {instance.name === instance.version ? null : (
+            <Badge appearance="outline">{instance.version}</Badge>
+          )}
           <Badge appearance="tint">{instance.schematics.length} 个投影</Badge>
         </button>
         <div className="toolbar-actions">
-          <Button
-            size="small"
-            icon={<ClipboardPaste24Regular />}
-            disabled={busy || !clipboardReady}
-            onClick={() => onPaste("")}
-          >
-            粘贴到根目录
-          </Button>
+          {/* 没有复制/剪切内容时「粘贴」无意义，直接不显示。 */}
+          {clipboardReady ? (
+            <Button
+              size="small"
+              icon={<ClipboardPaste24Regular />}
+              disabled={busy}
+              onClick={() => onPaste("")}
+            >
+              粘贴到根目录
+            </Button>
+          ) : null}
           <Button
             size="small"
             icon={<ArrowUpload24Regular />}
@@ -681,6 +765,7 @@ function VersionPanel({
                     busy={busy}
                     selectionMode={selectionMode}
                     selected={selected}
+                    selectedItems={selectedItems}
                     expandedFolders={expandedFolders}
                     clipboardReady={clipboardReady}
                     onToggleFolder={onToggleFolder}

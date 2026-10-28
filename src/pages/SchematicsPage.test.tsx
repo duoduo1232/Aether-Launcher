@@ -266,6 +266,8 @@ describe("SchematicsPage", () => {
       expect(vi.mocked(invoke)).toHaveBeenCalledWith("paste_schematic", {
         fromInstanceId: SURVIVAL,
         fromPath: "castle.litematic",
+        fromOrigin: "instance",
+        fromOriginVersion: "",
         toInstanceId: SURVIVAL,
         toFolder: "红石",
         moveFile: false,
@@ -290,6 +292,8 @@ describe("SchematicsPage", () => {
       expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_schematic", {
         instanceId: SURVIVAL,
         relativePath: "castle.litematic",
+        origin: "instance",
+        originVersion: "",
       });
     });
   });
