@@ -126,10 +126,11 @@ fn copies_every_ancestor_of_an_inheriting_version() {
 }
 
 #[test]
-fn an_already_installed_version_is_reported_not_overwritten() {
+fn an_existing_version_json_is_kept_and_an_instance_is_still_created() {
     let fixture = Fixture::new("already-installed");
     fixture.write_source_version("1.20.1", r#"{"id":"1.20.1","source":"foreign"}"#);
 
+    // 从文件夹导入时源和目标常常是同一个 `.minecraft`，那个版本早就装好了。
     let installed = fixture.game().join("versions").join("1.20.1");
     fs::create_dir_all(&installed).unwrap();
     fs::write(
@@ -140,15 +141,9 @@ fn an_already_installed_version_is_reported_not_overwritten() {
 
     let outcome = fixture.import(&["1.20.1"]);
 
-    // 同名版本已经存在：报告出来让界面提示，而不是悄悄跳过或覆盖。
-    assert!(
-        outcome.imported.is_empty(),
-        "an existing version must not produce a second instance"
-    );
-    assert_eq!(
-        skip_reason(&outcome, "1.20.1"),
-        Some(ImportSkipReason::DuplicateName)
-    );
+    // 文件已存在不是错误：直接给这个版本建实例，不再报「重名」。
+    assert_eq!(outcome.imported.len(), 1);
+    assert!(outcome.skipped.is_empty());
     assert_eq!(
         fixture.read_game_version("1.20.1").as_deref(),
         Some(r#"{"id":"1.20.1","source":"official"}"#),

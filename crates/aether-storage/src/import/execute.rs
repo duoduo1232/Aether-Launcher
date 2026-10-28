@@ -286,14 +286,12 @@ fn import_one(
     // Read the whole chain before writing anything, so a broken parent cannot
     // leave a half-imported child behind in the game tree.
     let chain = read_inheritance_chain(source_root, version_id)?;
-    // 只有**被选中的那个版本**同名才算「已经有了」；继承链上的父版本（比如原版
-    // 1.20.4）早就装在同一个 `.minecraft` 里是常态，跳过它不提示。
+    // 导入**不判断重名**：同一文件夹里的版本目录名本来就唯一，而且从文件夹
+    // 导入时源和目标常常是同一个 `.minecraft` —— 文件已经在那儿，直接登记成
+    // 实例即可。真正需要「重名提示」的是下载新版本（用户自己起名字才会撞），
+    // 那一侧在 `install.rs` 单独检查。
     for (id, bytes) in &chain {
-        match write_version_json(versions_root, id, bytes) {
-            Ok(()) => {}
-            Err(ImportSkipReason::DuplicateName) if id != version_id => {}
-            Err(reason) => return Err(reason),
-        }
+        write_version_json(versions_root, id, bytes)?;
     }
 
     create_instance(base, version_id, version_id, game_root).map_err(map_create_error)
@@ -378,9 +376,12 @@ fn parse_inherits_from(bytes: &[u8]) -> Result<Option<String>, ImportSkipReason>
 
 /// 写一份版本 JSON 到 `versions/<id>/<id>.json`，**绝不覆盖**已有文件。
 ///
-/// 已经有同名版本时返回 [`ImportSkipReason::DuplicateName`]，让调用方把它作为
-/// 「已存在」提示给用户：那个版本可能是官方校验过的、也可能是别的启动器装的，
-/// 直接覆盖会把它弄坏。
+/// 文件已存在时直接返回 `Ok(())`：同一文件夹里的版本目录名本来就唯一，而且从
+/// 文件夹导入时源和目标常常是同一个 `.minecraft`。那里已存在的 JSON 可能是官方
+/// 校验过的、也可能是别的启动器写的，都不该被替换，也不该报「重名」——那不是错误。
+///
+/// 需要提示「这个名字已经有了」的是**下载新版本**（名字由用户输入才会撞），
+/// 那一侧在 `src-tauri/src/commands/install.rs` 里单独检查。
 fn write_version_json(
     versions_root: &Path,
     version_id: &str,
@@ -389,7 +390,6 @@ fn write_version_json(
     let directory = versions_root.join(version_id);
     let destination = directory.join(format!("{version_id}.json"));
 
-    // 先查再建目录：已经有同名版本时连空目录都不留下。
     match fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Err(ImportSkipReason::UnsafeSource);
@@ -403,8 +403,8 @@ fn write_version_json(
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(ImportSkipReason::UnsafeSource);
         }
-        // 已存在：原样保留并报告，由界面提示「这个版本已经有了」。
-        Ok(_) => return Err(ImportSkipReason::DuplicateName),
+        // 已存在：原样保留，继续给这个版本建实例。
+        Ok(_) => return Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(ImportSkipReason::Io),
     }
