@@ -24,6 +24,9 @@ use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+pub mod asset_pack;
+pub(crate) mod asset_pack_commands;
+
 /// 单个投影文件的读取上限。
 const MAX_SCHEMATIC_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -177,7 +180,7 @@ pub struct SchematicDetail {
 }
 
 /// 实例存储根目录；路径来自 Tauri，不来自 IPC。
-fn instance_store_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(super) fn instance_store_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app
         .path()
         .app_data_dir()

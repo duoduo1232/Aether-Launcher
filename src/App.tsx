@@ -6,9 +6,10 @@ import {
 } from "@fluentui/react-components";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
+import { AssetPackPicker } from "./components/AssetPackPicker";
 import { EmptyState } from "./components/EmptyState";
-import { SchematicPreview } from "./components/SchematicPreview";
 import { ErrorState, ListSkeleton } from "./components/PageState";
+import { SchematicPreview } from "./components/SchematicPreview";
 import { Sidebar } from "./components/Sidebar";
 import {
   defaultApplicationInfo,
@@ -18,15 +19,10 @@ import {
 } from "./ipc";
 import type {
   ApplicationInfo,
+  AssetPack,
   SchematicDetail,
   SchematicOrigin,
 } from "./ipc";
-import { currentGreeting } from "./lib/greeting";
-import { parsePreviewLocation } from "./lib/previewRoute";
-import { useQuery } from "./lib/query";
-import { useTheme } from "./lib/useTheme";
-import { allPages } from "./navigation";
-import type { PageId } from "./navigation";
 import { AccountsPage } from "./pages/AccountsPage";
 import { HomePage } from "./pages/HomePage";
 import { InstancesPage } from "./pages/InstancesPage";
@@ -34,6 +30,13 @@ import { LibraryPage } from "./pages/LibraryPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { SchematicsPage } from "./pages/SchematicsPage";
 import { SettingsPage } from "./pages/SettingsPage";
+
+import { currentGreeting } from "./lib/greeting";
+import { parsePreviewLocation } from "./lib/previewRoute";
+import { useQuery } from "./lib/query";
+import { useTheme } from "./lib/useTheme";
+import { allPages } from "./navigation";
+import type { PageId } from "./navigation";
 
 /**
  * 独立投影预览窗口。
@@ -60,6 +63,8 @@ function SchematicPreviewWindow({
     [instanceId, relativePath, origin, originVersion],
   );
   const { status, data, error, reload } = useQuery<SchematicDetail>(load, true);
+  // 资源包只在用户点了「提取材质」之后才有值；没提取之前预览是纯色方块。
+  const [pack, setPack] = useState<AssetPack | null>(null);
 
   return (
     <div className="preview-window">
@@ -71,6 +76,7 @@ function SchematicPreviewWindow({
           拖动旋转 · 滚轮缩放 · 右键平移
         </Text>
       </div>
+      <AssetPackPicker pack={pack} onLoaded={setPack} />
       {status === "loading" ? (
         <ListSkeleton />
       ) : status === "error" ? (
@@ -81,10 +87,11 @@ function SchematicPreviewWindow({
         />
       ) : data ? (
         <>
-          <SchematicPreview detail={data} />
+          <SchematicPreview detail={data} pack={pack} />
           <Text className="muted preview-note">
             此投影出自 MC {data.metadata.createdForRelease ?? "未知版本"}
             （数据版本 {data.metadata.minecraftDataVersion}）
+            {pack ? ` · 材质来自 MC ${pack.sourceVersion}` : ""}
           </Text>
         </>
       ) : (

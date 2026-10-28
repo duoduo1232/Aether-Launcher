@@ -49,6 +49,7 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - Prism Launcher and MultiMC import: instances are read from `mmc-pack.json` and `instance.cfg`, and one managed instance is created per selected base version; loader components are reported but not installed
 - One-click launcher detection covering PCL2, HMCL, BakaXL, Prism Launcher and MultiMC in a single bounded pass, with the detected launcher labelled in the import dialog
 - Native folder picker in the backend via `tauri-plugin-dialog`, so the import commands never accept a path from the frontend; scanned sources are referenced by a single-use token
+- Textured schematic preview: block models, block states and textures are extracted on demand from a client JAR the user already has, baked into one atlas and rendered as UV-mapped quads by shape, so stairs, slabs, fences and glass look like Minecraft instead of coloured cubes; extraction is user-triggered through a version picker in the preview window and cached per JAR
 
 ### Security
 

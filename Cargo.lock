@@ -53,12 +53,14 @@ dependencies = [
  "aether-schematic",
  "aether-storage",
  "flate2",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tracing",
+ "zip",
 ]
 
 [[package]]

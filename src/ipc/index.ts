@@ -132,3 +132,16 @@ export {
   stopInstalledInstance,
 } from "./launch";
 export type { GameRunStatus } from "./launch";
+
+export {
+  assetPackStatus,
+  listAssetPackCandidates,
+  loadAssetPack,
+} from "./assetPack";
+export type {
+  AssetPack,
+  AssetPackCandidate,
+  AssetQuad,
+  AssetVariant,
+  AtlasSlot,
+} from "./assetPack";

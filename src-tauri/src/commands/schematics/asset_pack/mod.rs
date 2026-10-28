@@ -1,0 +1,294 @@
+//! 从版本 jar 里提取方块资源，供 3D 预览做贴图渲染。
+//!
+//! # 为什么要读 jar
+//!
+//! 预览如果只给每个方块一个纯色，木板看不到纹理、半砖看不到斜面、玻璃看不到
+//! 透明，整座建筑就糊成一片马赛克。真实的观感需要 Minecraft 自己的三样东西：
+//!
+//! - `assets/minecraft/blockstates/<方块>.json`：**方块状态 → 模型**的映射
+//!   （朝向、半砖上下、连接形状……）；
+//! - `assets/minecraft/models/block/<模型>.json`：模型的多边形盒子（`elements`），
+//!   每个面带 UV 与贴图引用，可以带 `parent` 继承；
+//! - `assets/minecraft/textures/block/<贴图>.png`：实际的像素。
+//!
+//! 这三样都在版本 jar 里（jar 就是 zip），所以不需要联网，也不需要玩家装模组。
+//!
+//! # 边界
+//!
+//! - jar 与其中的 JSON、PNG 都是**不可信输入**：条目数量、单个 JSON 大小、
+//!   模型继承深度、PNG 尺寸都有上限，超限按「没有资源」处理而不是崩掉；
+//! - 提取结果只留在应用数据目录，不改动玩家的游戏目录；
+//! - 解析失败（老版本格式、模组方块）一律回退成「一个整方块 + 该方块的任一
+//!   贴图」，保证预览永远画得出来。
+
+use std::collections::HashMap;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+mod cache;
+mod model;
+mod pack;
+
+pub use cache::{VersionJar, cache_key, list_version_jars, load_cached, store_cached};
+pub use model::VariantBinding;
+pub use pack::build_atlas;
+/// 一个 jar 里允许读取的最大条目数，防止异常压缩包拖住解析。
+const MAX_ENTRIES: usize = 40_000;
+
+/// 单个 JSON（blockstate / model）的大小上限。
+const MAX_JSON_BYTES: u64 = 4 * 1024 * 1024;
+
+/// 单张贴图的大小上限。
+const MAX_TEXTURE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// 模型 `parent` 链的最大深度。
+const MAX_PARENT_DEPTH: usize = 16;
+
+/// 一次提取允许处理的贴图数量。
+const MAX_TEXTURES: usize = 4096;
+
+#[derive(Debug)]
+pub enum PackError {
+    /// 打不开 jar。
+    Io(std::io::Error),
+    /// 不是合法的 zip，或缺少 `assets/minecraft`。
+    NotAResourcePack,
+    /// 条目过多。
+    TooManyEntries,
+}
+
+impl std::fmt::Display for PackError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "{error}"),
+            Self::NotAResourcePack => write!(formatter, "not a Minecraft version jar"),
+            Self::TooManyEntries => write!(formatter, "the jar has too many entries"),
+        }
+    }
+}
+
+impl From<std::io::Error> for PackError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// 提取出来的原始资源，尚未烘焙成渲染用的模型。
+#[derive(Debug, Default)]
+pub struct RawPack {
+    /// 方块 id（`minecraft:stone`）→ blockstate JSON 文本。
+    pub blockstates: HashMap<String, String>,
+    /// 模型 id（`minecraft:block/stairs`）→ model JSON 文本。
+    pub models: HashMap<String, String>,
+    /// 贴图 id（`minecraft:block/cherry_planks`）→ PNG 字节。
+    pub textures: HashMap<String, Vec<u8>>,
+}
+
+/// 一份提取完成、可以直接给前端用的资源包。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetPack {
+    /// 资源来自哪个版本 jar（只用于界面显示，不含绝对路径）。
+    pub source_version: String,
+    /// 方块 id → 该方块所有「状态 → 模型」的绑定。
+    pub blocks: HashMap<String, Vec<VariantBinding>>,
+    /// 贴图图集（PNG 字节，前端转成 data URL 或 Blob）。
+    pub atlas_png: Vec<u8>,
+    /// 图集里每一张贴图的 UV 区域，键是贴图 id。
+    pub atlas: HashMap<String, AtlasSlot>,
+    /// 图集边长（像素）。
+    pub atlas_size: u32,
+}
+
+/// 图集里一个贴图的位置，坐标是 0..1 的 UV。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasSlot {
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
+/// 从版本 jar 提取资源并烘焙成前端可用的资源包。
+///
+/// `jar` 必须是玩家自己 `.minecraft/versions/<版本>/<版本>.jar`，由后端在
+/// 用户选择版本后解析得到；前端从不传路径。
+pub fn build_asset_pack(jar: &Path, version_label: &str) -> Result<AssetPack, PackError> {
+    let raw = read_jar(jar)?;
+    if raw.blockstates.is_empty() || raw.models.is_empty() {
+        return Err(PackError::NotAResourcePack);
+    }
+
+    // 只保留投影里真的会出现、且能解析出模型的方块。
+    let blocks = model::bake_all(&raw);
+
+    // 图集只需要被模型引用到的贴图。
+    let referenced = model::referenced_textures(&blocks);
+    let (atlas_png, atlas, atlas_size) = build_atlas(&raw.textures, &referenced);
+
+    Ok(AssetPack {
+        source_version: version_label.to_owned(),
+        blocks,
+        atlas_png,
+        atlas,
+        atlas_size,
+    })
+}
+
+/// 读取 jar 里的 `assets/minecraft/{blockstates,models,textures}`。
+fn read_jar(jar: &Path) -> Result<RawPack, PackError> {
+    let file = fs::File::open(jar)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| PackError::NotAResourcePack)?;
+    if archive.len() > MAX_ENTRIES {
+        return Err(PackError::TooManyEntries);
+    }
+
+    let mut raw = RawPack::default();
+    for index in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(index) else {
+            continue;
+        };
+        // zip 9 的 `name()` 返回 Result（文件名可能不是合法 UTF-8）。
+        let Ok(entry_name) = entry.name() else {
+            continue;
+        };
+        let Some(name) = entry_name
+            .strip_prefix("assets/minecraft/")
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let size = entry.size();
+
+        if let Some(rest) = name.strip_prefix("blockstates/") {
+            if let Some(id) = rest.strip_suffix(".json")
+                && id.len() <= 128
+                && let Some(text) = read_json(&mut entry, size)
+            {
+                raw.blockstates.insert(format!("minecraft:{id}"), text);
+            }
+            continue;
+        }
+        if let Some(rest) = name.strip_prefix("models/") {
+            if let Some(id) = rest.strip_suffix(".json")
+                && id.len() <= 128
+                && let Some(text) = read_json(&mut entry, size)
+            {
+                raw.models.insert(format!("minecraft:{id}"), text);
+            }
+            continue;
+        }
+        if let Some(rest) = name.strip_prefix("textures/")
+            && let Some(id) = rest.strip_suffix(".png")
+            && id.len() <= 128
+            && raw.textures.len() < MAX_TEXTURES
+            && size <= MAX_TEXTURE_BYTES
+            && !id.contains("..")
+        {
+            let mut bytes = Vec::with_capacity(size as usize);
+            if entry
+                .take(MAX_TEXTURE_BYTES)
+                .read_to_end(&mut bytes)
+                .is_ok()
+            {
+                raw.textures.insert(format!("minecraft:{id}"), bytes);
+            }
+        }
+    }
+
+    Ok(raw)
+}
+
+/// 读一段不超过 [`MAX_JSON_BYTES`] 的文本。
+fn read_json(entry: &mut impl Read, size: u64) -> Option<String> {
+    if size > MAX_JSON_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    entry.take(MAX_JSON_BYTES).read_to_end(&mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// 提取结果缓存的落地路径：`<root>/asset-packs/<版本 hash>/`。
+#[must_use]
+pub fn cache_dir(root: &Path, key: &str) -> PathBuf {
+    root.join("asset-packs").join(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 用真实版本 jar 跑一遍提取：方块、模型、图集都要有内容。
+    ///
+    /// jar 路径来自环境变量，没有就跳过 —— CI 上没有游戏目录。
+    #[test]
+    fn extracts_a_real_version_jar() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let jar = std::path::PathBuf::from(jar);
+        let pack = build_asset_pack(&jar, "test").expect("extract");
+
+        assert!(!pack.blocks.is_empty(), "no blocks baked");
+        assert!(!pack.atlas.is_empty(), "no textures in the atlas");
+        assert!(pack.atlas_size >= 16);
+        assert!(pack.atlas_png.starts_with(&[0x89, b'P', b'N', b'G']));
+
+        // 一个几乎肯定存在的方块：石头。必须有几何且引用到贴图。
+        let stone = pack.blocks.get("minecraft:stone").expect("stone baked");
+        assert!(!stone.is_empty());
+        assert!(!stone[0].model.quads.is_empty());
+        assert!(!stone[0].model.texture_ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    /// 打印真实 jar 的提取规模，人工核对一次。
+    #[test]
+    fn report_real_jar_scale() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        let quads: usize = pack
+            .blocks
+            .values()
+            .flat_map(|bindings| bindings.iter())
+            .map(|binding| binding.model.quads.len())
+            .sum();
+        println!(
+            "blocks={} atlas_entries={} atlas_side={} quads={} atlas_png_bytes={}",
+            pack.blocks.len(),
+            pack.atlas.len(),
+            pack.atlas_size,
+            quads,
+            pack.atlas_png.len()
+        );
+        // 抽查几个真实方块：坐标必须在 0..1 内、UV 必须在 0..1 内。
+        for name in [
+            "minecraft:stone",
+            "minecraft:cherry_planks",
+            "minecraft:oak_stairs",
+        ] {
+            if let Some(bindings) = pack.blocks.get(name) {
+                let quad = &bindings[0].model.quads[0];
+                println!(
+                    "{name}: quads={} p0={:?} uv0={:?} tex={:?}",
+                    bindings[0].model.quads.len(),
+                    quad.positions[0],
+                    quad.uvs[0],
+                    bindings[0].model.texture_ids
+                );
+            }
+        }
+    }
+}

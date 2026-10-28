@@ -234,6 +234,39 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 **读、删、粘贴的源都按来源定位。** `read_schematic` / `delete_schematic` / `paste_schematic` 都接收 `origin` 与 `originVersion`，由 `resolve_existing_path` 换算成真实路径：`instance` → `<实例目录>/schematics`，`game` → `<游戏目录>/schematics`，`version` → `<游戏目录>/versions/<版本>/schematics`。只按相对路径拼到实例私有目录是错的 —— 文件实际在版本目录里，双击预览就会报 `cannot inspect schematic file`。`originVersion` 必须是单个安全路径段，未知的 `origin` 直接拒绝。**写入方向不受影响**：导入和粘贴的目标永远是实例私有目录，绝不改写共享的游戏目录。
 
+
+## 投影图的贴图渲染
+
+纯色方块看起来就是马赛克：木板没有纹理、楼梯是整块立方体、玻璃不透明。真实观感要用 Minecraft 自己的
+`blockstates/*.json`、`models/**/*.json` 和 `textures/**/*.png` —— 它们都在玩家已经下载好的版本 jar 里。
+
+**资源包由用户手动触发提取，不在打开页面时自动做。** 一个客户端 jar 二十多 MB、上千个 model，进页面就解压会
+每次等好几秒。预览窗口顶部有一条提示：「当前是纯色预览 + 版本下拉框 + 提取材质」，用户选一个版本点按钮才解 jar。
+
+提取在 `src-tauri/src/commands/schematics/asset_pack/`：
+
+| 文件 | 职责 |
+| --- | --- |
+| `mod.rs` | `build_asset_pack`：读 jar（`MAX_ENTRIES = 40_000`、`MAX_JSON_BYTES`、`MAX_TEXTURE_BYTES`、`MAX_TEXTURES`），解析 blockstate 与模型 |
+| `model.rs` | `bake_all` / `resolve_model`：走父链合并模型，把 element 展开成带 UV 的四边形，按 `cullface` 记录可剔除方向 |
+| `pack.rs` | `build_atlas`：每张 16×16 贴图放一个格子，最近邻缩放，输出一张 PNG 和每张图的 0..1 UV |
+| `cache.rs` | 找版本 jar（`MIN_LIBRARY_JAR_BYTES = 8 MiB` 过滤掉 loader 的小 jar）、缓存键与读写 |
+
+- **缓存键 = jar 路径 + 大小 + 修改时间**，不用内容哈希 —— 算哈希要读 25 MB，换来的只是重装同版本时多命中一次。
+  缓存在应用数据目录的 `asset-packs/<键>/` 下，包含 `pack.json` 与 `atlas.png`。
+- **图集通过 data URL 交给前端**，不新开资源协议、不落临时文件：一张 512² 的图压完几十 KB，只读一次。
+- **材质 id 带命名空间**（`minecraft:block/oak_planks`）。剥掉 `minecraft:` 前缀会让图集一张都找不到。
+
+前端在 `src/lib/texturedMesh.ts`（纯函数，不依赖 Three）把投影方格和资源包合成几何：
+
+- 每个方块按模型展开成若干四边形，楼梯就是 15 个面，不再是整立方体；
+- 带 `cullface` 的面在邻居占住该方向时整面跳过，房子内墙不画；
+- 按 `opaque` / `cutout` / `translucent` 分三层：`cutout` 用 `alphaTest`（树叶、铁栏杆），`translucent` 关
+  `depthWrite`（玻璃）；
+- 图集必须 `NearestFilter`，否则像素纹理被插值糊掉。
+
+资源包里没有的方块退回纯色整方块（`fallback`），不会凭空消失；超过 `maxQuads`（40 万）就停止继续展开，避免把页面拖死。
+
 ## 还没有的部分
 
 - `aether-manifest` 能解析 libraries、arguments、assetIndex、`downloads.client` 和 `javaVersion`，并按规则过滤库、展开参数。还没有：`logging`，以及 `os.version` 的正则（带 `version` 的系统规则目前按不匹配处理）。

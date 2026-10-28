@@ -82,6 +82,9 @@ pub fn run() {
             commands::schematics::delete_schematic,
             commands::schematics::paste_schematic,
             commands::schematics::open_schematic_window,
+            commands::schematics::asset_pack_commands::list_asset_pack_candidates,
+            commands::schematics::asset_pack_commands::load_asset_pack,
+            commands::schematics::asset_pack_commands::asset_pack_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
