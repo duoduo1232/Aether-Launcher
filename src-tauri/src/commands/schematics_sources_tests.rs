@@ -205,3 +205,41 @@ fn display_name_falls_back_when_the_metadata_name_is_a_placeholder() {
     // 极端情况：没有文件名可用时退回原值，不产生空标题。
     assert_eq!(display_name("Unnamed", ".litematic"), "Unnamed");
 }
+
+#[test]
+fn the_scan_key_collapses_instances_that_share_a_game_directory() {
+    // 本机 134 个实例都指向同一个 .minecraft。如果键里带上实例目录，缓存永远
+    // 不会命中，页面上就是「一直加载」——这条测试钉住那个回归。
+    let root = temp_root("scan-key");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("versions")).expect("game");
+
+    let shared_versions: Vec<super::ScanKey> = (0..5)
+        .map(|index| {
+            let mut instance = instance_with_root(root.join(format!("instance-{index}")));
+            instance.game_directory = Some(game.clone());
+            super::ScanKey::of(&instance)
+        })
+        .collect();
+
+    // 5 个不同实例、同一个游戏目录：必须归并成 1 个键。
+    let unique: std::collections::HashSet<_> = shared_versions.iter().collect();
+    assert_eq!(
+        unique.len(),
+        1,
+        "instances sharing a directory must share one key"
+    );
+
+    // 指向别的游戏目录的实例仍然是不同的键。
+    let other = root.join("other-game");
+    fs::create_dir_all(other.join("versions")).expect("other game");
+    let mut other_instance = instance_with_root(root.join("instance-other"));
+    other_instance.game_directory = Some(other);
+    assert_ne!(
+        super::ScanKey::of(&other_instance),
+        **unique.iter().next().expect("one key"),
+        "a different game directory must not reuse the cache"
+    );
+
+    fs::remove_dir_all(root).expect("cleanup");
+}

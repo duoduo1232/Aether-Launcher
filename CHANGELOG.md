@@ -107,3 +107,6 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 
 - Instance rows no longer collapse: the row is a flex container again after the clickable wrapper broke the four-column grid, and the meta line truncates instead of wrapping over three lines.
 - Instance status is derived from the disk (`versions/<version>/<version>.jar` present) instead of the `incomplete` value written at creation, so installed instances no longer show 待补齐 forever.
+### Fixed
+
+- The schematic scan cache never hit: its key included the instance root, which is unique per instance, so all 134 instances rescanned the same `.minecraft`. The key is the game directory now; a regression test pins it.

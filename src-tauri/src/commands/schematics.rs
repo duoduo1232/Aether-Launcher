@@ -574,19 +574,17 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
 
 /// 决定「这次扫描能不能复用上次结果」的键。
 ///
-/// 游戏目录相同、且实例私有目录相同，扫出来的东西就一样。
+/// **只看游戏目录**：共用同一个 `.minecraft` 的实例，`versions/*/schematics`
+/// 完全相同，扫一次就够了。
+///
+/// 实例私有目录（`<root>/schematics`）各不相同，但它通常是空目录、代价只有一次
+/// 失败的 `read_dir`——比让键永不命中、把整个 `.minecraft` 重扫 134 遍便宜得多。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ScanKey {
-    game_directory: PathBuf,
-    instance_root: PathBuf,
-}
+struct ScanKey(PathBuf);
 
 impl ScanKey {
     fn of(instance: &GameInstance) -> Self {
-        Self {
-            game_directory: resolve_game_directory(instance),
-            instance_root: instance.root.clone(),
-        }
+        Self(resolve_game_directory(instance))
     }
 }
 
