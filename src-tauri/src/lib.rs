@@ -81,6 +81,7 @@ pub fn run() {
             commands::schematics::import_schematic_folder,
             commands::schematics::delete_schematic,
             commands::schematics::paste_schematic,
+            commands::schematics::open_schematic_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -39,6 +39,13 @@ declare module "./call" {
       toFolder: string;
       moveFile: boolean;
     };
+    open_schematic_window: {
+      instanceId: string;
+      relativePath: string;
+      origin: string;
+      originVersion: string;
+      title: string;
+    };
   }
 
   interface CommandResults {
@@ -48,6 +55,7 @@ declare module "./call" {
     import_schematic_folder: SchematicFolderImport | null;
     delete_schematic: null;
     paste_schematic: string;
+    open_schematic_window: string;
   }
 }
 
@@ -241,5 +249,27 @@ export async function pasteSchematic(
     toInstanceId,
     toFolder,
     moveFile,
+  });
+}
+
+/**
+ * 在独立窗口里打开一个投影的 3D 预览，返回新窗口的标签。
+ *
+ * 窗口只加载 `#/schematic-preview?…` 片段，里面没有文件路径、没有脚本；
+ * 真正的文件由后端按 `origin` / `originVersion` 定位。
+ */
+export async function openSchematicWindow(
+  instanceId: string,
+  relativePath: string,
+  origin: SchematicOrigin,
+  originVersion: string,
+  title: string,
+): Promise<string> {
+  return callCommand("open_schematic_window", {
+    instanceId,
+    relativePath,
+    origin,
+    originVersion,
+    title,
   });
 }

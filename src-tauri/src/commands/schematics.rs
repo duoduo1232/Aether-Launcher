@@ -390,8 +390,68 @@ fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
     )
 }
 
-/// `versions/` 下的全部版本目录名，排序后返回。
+/// 打开一个独立的 3D 预览窗口，返回新窗口的标签。
 ///
+/// 预览放在单独窗口里，是因为它的操作（拖动旋转、滚轮缩放、右键平移）和主
+/// 界面的滚动/多选相冲突；独立窗口也能同时查看多个投影。
+///
+/// 窗口里加载的是同一个前端，靠 URL 片段 `#/schematic-preview?instance=…`
+/// 走另一条路由 —— 前端从不传 HTML 或脚本，只传实例 ID、相对路径与来源。
+#[tauri::command]
+pub(crate) async fn open_schematic_window(
+    app: tauri::AppHandle,
+    instance_id: String,
+    relative_path: String,
+    origin: String,
+    origin_version: String,
+    title: String,
+) -> Result<String, String> {
+    validate_relative_path(&relative_path, true)?;
+    // 实例 ID 先校验形状，避免把任意字符串拼进窗口 URL。
+    let id = InstanceId::parse(&instance_id).map_err(|_| "invalid instance ID".to_owned())?;
+    // 标题会显示在窗口栏上，只保留一行、限长，防止塞入控制字符或超长文本。
+    let title: String = title.chars().filter(|c| !c.is_control()).take(80).collect();
+
+    let label = format!("preview-{}", next_preview_label());
+    let query = format!(
+        "#/schematic-preview?instance={}&path={}&origin={}&version={}&title={}",
+        id,
+        url_encode(&relative_path),
+        url_encode(&origin),
+        url_encode(&origin_version),
+        url_encode(&title),
+    );
+
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(query.into()))
+        .title(title)
+        .inner_size(1100.0, 780.0)
+        .min_inner_size(720.0, 520.0)
+        .build()
+        .map_err(|error| format!("cannot open the preview window: {error}"))?;
+
+    Ok(label)
+}
+
+/// 预览窗口的自增序号，保证标签唯一（Tauri 拒绝重复标签）。
+fn next_preview_label() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// 最小百分号编码：只放行 URL 里安全的字符。
+fn url_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+/// `versions/` 下的全部版本目录名，排序后返回。
 /// 多个实例共用同一个 `.minecraft` 时这一层目录完全一样，所以单独提出来，
 /// 由调用方按游戏目录缓存一次 —— 否则 134 个实例会各枚举一遍、每次都
 /// `is_dir` 上百次（实测 816 ms）。

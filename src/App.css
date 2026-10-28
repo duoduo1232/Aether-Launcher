@@ -908,6 +908,8 @@ button { letter-spacing: 0; }
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
+  /* 整行是按钮：双击打开预览，不能因为双击而选中文字。 */
+  user-select: none;
 }
 
 .schematic-row:hover { background: var(--hover); }
@@ -1095,4 +1097,32 @@ button { letter-spacing: 0; }
   align-items: center;
   gap: 4px;
   font-size: var(--fontSizeBase200);
+}
+/* ── 独立投影预览窗口 ───────────────────────────────────────────────
+   这个布局只用在 `#/schematic-preview` 窗口里：没有侧边栏，3D 视图占满
+   剩余高度，标题和说明各占一行。 */
+.preview-window {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px 14px;
+  height: 100vh;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+.preview-window-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.preview-window .schematic-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1b1d23;
 }

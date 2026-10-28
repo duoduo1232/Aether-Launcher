@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimum capability set for the Aether Launcher main window",
-  "windows": ["main"],
+  "description": "Minimum capability set for the Aether Launcher windows. The `preview-*` label is the standalone schematic 3D preview window opened by `open_schematic_window`; it reads one projection and nothing else.",
+  "windows": ["main", "preview-*"],
   "permissions": ["core:default"]
 }

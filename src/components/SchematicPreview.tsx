@@ -47,21 +47,32 @@ export function SchematicPreview({ detail }: SchematicPreviewProps) {
     scene.background = new THREE.Color(0x1b1d23);
 
     const extent = estimateExtent(data);
-    const camera = new THREE.PerspectiveCamera(
-      50,
-      container.clientWidth / Math.max(1, container.clientHeight),
+    // 正交相机：投影图是方格建筑，透视会把远处的方块缩小、看起来像歪的。
+    // shulkr 这类查看器默认也是等轴测正交视角。
+    const aspect =
+      container.clientWidth / Math.max(1, container.clientHeight);
+    const half = extent * 1.15;
+    const camera = new THREE.OrthographicCamera(
+      -half * aspect,
+      half * aspect,
+      half,
+      -half,
       0.1,
-      Math.max(100, extent * 10),
+      Math.max(100, extent * 20),
     );
-    camera.position.set(extent, extent * 0.8, extent);
+    camera.position.set(extent * 1.6, extent * 1.3, extent * 1.6);
+    camera.lookAt(0, 0, 0);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.target.set(0, 0, 0);
+    controls.update();
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x33383f, 2.2));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    // 这两盏灯模拟 Minecraft 的「顶面最亮、侧面次之」：环境光压得很低，
+    // 主要靠方向光，方块之间才有明暗层次，不会糊成一片。
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x33383f, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.0);
     sun.position.set(extent, extent * 2, extent);
     scene.add(sun);
 
@@ -117,7 +128,12 @@ export function SchematicPreview({ detail }: SchematicPreviewProps) {
     const observer = new ResizeObserver(() => {
       const width = container.clientWidth;
       const height = Math.max(1, container.clientHeight);
-      camera.aspect = width / height;
+      // 正交相机没有 `aspect` 字段，靠重算 left/right 保持比例。
+      const nextAspect = width / height;
+      camera.left = -half * nextAspect;
+      camera.right = half * nextAspect;
+      camera.top = half;
+      camera.bottom = -half;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
     });

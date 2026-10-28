@@ -24,7 +24,6 @@ import {
   ErrorState,
   ListSkeleton,
 } from "../components/PageState";
-import { SchematicPreview } from "../components/SchematicPreview";
 import { SchematicTree } from "../components/SchematicTree";
 import {
   IMPORT_LIMIT_BYTES,
@@ -35,14 +34,13 @@ import {
   isTauri,
   listInstances,
   listSchematics,
+  openSchematicWindow,
   pasteSchematic,
-  readSchematic,
   setGameDirectoryForAllInstances,
 } from "../ipc";
 import type {
   InstanceSchematics,
   InstanceSummary,
-  SchematicDetail,
   SchematicOrigin,
   SchematicSummary,
 } from "../ipc";
@@ -99,7 +97,6 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
   const desktop = isTauri();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<SchematicDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -247,21 +244,20 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     }
   }, [reload, targetId]);
 
+  /** 双击打开独立预览窗口；窗口自己加载那一个投影。 */
   const handlePreview = useCallback(
     async (instanceId: string, item: SchematicSummary) => {
       setError(null);
       setBusy(true);
       try {
-        setDetail(
-          await readSchematic(
-            instanceId,
-            item.relativePath,
-            item.origin,
-            item.originVersion,
-          ),
+        await openSchematicWindow(
+          instanceId,
+          item.relativePath,
+          item.origin,
+          item.originVersion,
+          item.metadata.name || item.fileName,
         );
       } catch (caught) {
-        setDetail(null);
         setError(describeError(caught));
       } finally {
         setBusy(false);
@@ -356,13 +352,6 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
       }
       if (done > 0) {
         setNotice(`已删除 ${done} 个投影`);
-        setDetail((previous) =>
-          previous &&
-          previous.instanceId === instanceId &&
-          items.some((item) => item.relativePath === previous.relativePath)
-            ? null
-            : previous,
-        );
         setSelection(null);
         reload();
       }
@@ -640,25 +629,6 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
           ) : null}
         </>
       )}
-
-      {detail ? (
-        <section className="status-panel preview-panel" aria-label="3D 预览">
-          <div className="preview-heading">
-            <Text as="h2" size={400} weight="semibold">
-              3D 预览：{detail.metadata.name || detail.fileName}
-            </Text>
-            <Text className="muted" size={300}>
-              拖动旋转 · 滚轮缩放 · 右键平移
-            </Text>
-          </div>
-          <SchematicPreview detail={detail} />
-          <p className="muted preview-note">
-            此投影出自 MC {detail.metadata.createdForRelease ?? "未知版本"}
-            （数据版本 {detail.metadata.minecraftDataVersion}）。复制到数据版本
-            不同的版本时，部分方块状态可能随版本变化，进游戏后请核对。
-          </p>
-        </section>
-      ) : null}
     </>
   );
 }
@@ -810,7 +780,16 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-/** 下拉框里统一用「名字（版本）」；`value` 必须和 `Option` 的文本一致。 */
+/**
+ * 下拉框里的一项：名字与版本相同时只显示一次，避免 `1.10.2（1.10.2）`。
+ *
+ * `value` 必须和 `Option` 的文本一致，所以两边都走这个函数。
+ */
 function describeInstance(instance: InstanceSummary | undefined): string {
-  return instance ? `${instance.name}（${instance.version}）` : "";
+  if (!instance) {
+    return "";
+  }
+  return instance.name === instance.version
+    ? instance.name
+    : `${instance.name}（${instance.version}）`;
 }

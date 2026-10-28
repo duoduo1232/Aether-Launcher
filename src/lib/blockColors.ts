@@ -1,3 +1,5 @@
+import { FAMILY_COLORS } from "./blockFamilyColors";
+
 /**
  * 方块 ID → 预览颜色的对照表。
  *
@@ -129,14 +131,92 @@ export function isAir(blockName: string): boolean {
 }
 
 /**
- * 查一个方块的代表色；未收录的方块按名字哈希出稳定颜色。
- * 返回 `#rrggbb`。
+ * 查一个方块的代表色。
+ *
+ * 顺序：手写主表 → 家族表 → 按名字后缀推导 → 名字哈希。
+ *
+ * 后两步是为了「没收录的方块也别长得像马赛克」。真实投影里同一棵树会同时
+ * 出现原木、去皮原木、木板、台阶、楼梯、活板门等十几种变体，只收录其中几个
+ * 时，剩下的按哈希取色会得到与材质无关的颜色（樱花木变粉紫、云杉变黄绿）。
  */
 export function colorForBlock(blockName: string): string {
   const known = BLOCK_COLORS[blockName];
   if (known) {
     return known;
   }
+  const family = FAMILY_COLORS[blockName];
+  if (family) {
+    return family;
+  }
+  const derived = deriveFromFamily(blockName);
+  if (derived) {
+    return derived;
+  }
+  return hashedColor(blockName);
+}
+
+/**
+ * 按「同材质的形状变体」推导颜色：`X_stairs`、`X_slab`、`X_wall`、`X_fence`、
+ * `X_door`、`X_trapdoor`、`X_button`、`X_pressure_plate`、`X_sign`
+ * 都复用 `X` 的颜色；`stripped_X` 找不到时退回 `X`。
+ *
+ * 返回 `undefined` 表示推导不出来，交给哈希。
+ */
+function deriveFromFamily(blockName: string): string | undefined {
+  const bare = blockName.startsWith("minecraft:")
+    ? blockName.slice("minecraft:".length)
+    : blockName;
+  for (const suffix of SHAPE_SUFFIXES) {
+    if (!bare.endsWith(suffix) || bare.length <= suffix.length) {
+      continue;
+    }
+    const base = bare.slice(0, -suffix.length);
+    const baseColor = lookupBare(base);
+    if (baseColor) {
+      return baseColor;
+    }
+  }
+  // `stripped_cherry_log` → 先试 `cherry_log`，再试 `cherry_planks`。
+  if (bare.startsWith("stripped_")) {
+    const rest = bare.slice("stripped_".length);
+    return lookupBare(rest) ?? lookupBare(`${rest}_planks`);
+  }
+  // `X_planks` 找不到时用同材质原木色，保证木板和原木同一色系。
+  if (bare.endsWith("_planks")) {
+    const wood = bare.slice(0, -"_planks".length);
+    return lookupBare(`${wood}_log`) ?? lookupBare(`${wood}_wood`);
+  }
+  if (bare.endsWith("_log") || bare.endsWith("_wood")) {
+    const wood = bare.replace(/_(log|wood)$/, "");
+    return lookupBare(`${wood}_planks`);
+  }
+  return undefined;
+}
+
+/** 形状后缀；顺序从长到短，避免 `_door` 抢走 `_trapdoor`。 */
+const SHAPE_SUFFIXES: readonly string[] = [
+  "_pressure_plate",
+  "_fence_gate",
+  "_trapdoor",
+  "_stairs",
+  "_button",
+  "_fence",
+  "_slab",
+  "_wall",
+  "_door",
+  "_sign",
+];
+
+/** 按不含命名空间的名字查两张表。 */
+function lookupBare(bare: string): string | undefined {
+  return (
+    BLOCK_COLORS[`minecraft:${bare}`] ??
+    FAMILY_COLORS[`minecraft:${bare}`]
+  );
+}
+
+/** 最后手段：按名字哈希出稳定颜色（同一方块每次渲染颜色一致）。 */
+function hashedColor(blockName: string): string {
   const bare = blockName.startsWith("minecraft:")
     ? blockName.slice("minecraft:".length)
     : blockName;

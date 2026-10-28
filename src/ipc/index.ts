@@ -107,6 +107,7 @@ export {
   importSchematic,
   importSchematicFolder,
   listSchematics,
+  openSchematicWindow,
   pasteSchematic,
   readSchematic,
 } from "./schematics";
