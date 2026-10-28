@@ -64,15 +64,15 @@ export function InstanceList({
                   {instance.name}
                 </Text>
                 <Text className="muted instance-meta">
-                  {instance.version}
+                  <span data-part="version">{instance.version}</span>
                   <span className="meta-separator" aria-hidden="true">
                     ·
                   </span>
-                  {javaLabel ?? "Java 未检测"}
+                  <span data-part="java">{javaLabel ?? "Java 未检测"}</span>
                   <span className="meta-separator" aria-hidden="true">
                     ·
                   </span>
-                  {formatMemoryMiB(memoryMiB)}
+                  <span data-part="memory">{formatMemoryMiB(memoryMiB)}</span>
                 </Text>
                 {missingGameDirectory ? (
                   <Text className="muted instance-warning">

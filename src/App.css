@@ -442,7 +442,16 @@ button { letter-spacing: 0; }
   white-space: nowrap;
 }
 
-.meta-separator { color: var(--text-subtle); }
+.meta-separator {
+  color: var(--text-subtle);
+  flex: none;
+}
+/* 名称可能很长，副标题里的每一段都不许被挤扁。 */
+.instance-meta > span[data-part] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .status-chip { white-space: nowrap; }
 
 
