@@ -66,10 +66,11 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1b1d23);
 
-    // 场景尺度：贴图路径用顶点包围盒，纯色路径沿用体素包围盒。
-    const extent = textured
-      ? extentOfLayers(textured)
-      : estimateExtent(solid!);
+    // 场景按**真实包围盒**取景，不能一直盯原点：投影图里的方块用世界绝对
+    // 坐标（y 可能从 60 起、z 从 183 起），盯着 (0,0,0) 会把建筑推出视野。
+    const bounds = textured ? boundsOfLayers(textured) : boundsOfSolid(solid!);
+    const center = bounds.center;
+    const extent = bounds.radius;
 
     const aspect = container.clientWidth / Math.max(1, container.clientHeight);
     const half = extent * 1.15;
@@ -81,14 +82,18 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
       0.1,
       Math.max(200, extent * 40),
     );
-    // 等轴测：从 (±1, ±0.8, ±1) 方向看。
-    camera.position.set(extent * 1.5, extent * 1.2, extent * 1.5);
-    camera.lookAt(0, 0, 0);
+    // 等轴测：从 (±1, ±0.8, ±1) 方向看，对准包围盒中心。
+    camera.position.set(
+      center.x + extent * 1.5,
+      center.y + extent * 1.2,
+      center.z + extent * 1.5,
+    );
+    camera.lookAt(center);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.target.set(0, 0, 0);
+    controls.target.copy(center);
     controls.update();
 
     // 模拟 Minecraft 的光照：环境光很暗，主要靠两盏方向光，方块之间才有层次。
@@ -107,10 +112,10 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
       if (textured.fallback.count > 0) {
         addFallbackMeshes(scene, detail, textured.fallback.count, disposables);
       }
-      addGrid(scene, extent, disposables);
+      addGrid(scene, bounds, disposables);
     } else {
       addSolidMesh(scene, solid!, disposables);
-      addGrid(scene, extent, disposables);
+      addGrid(scene, bounds, disposables);
     }
 
     let frame = 0;
@@ -329,39 +334,92 @@ function addSolidMesh(
   disposables.push(geometry, material, mesh);
 }
 
-function addGrid(scene: THREE.Scene, extent: number, disposables: Disposable[]): void {
-  const size = Math.ceil(extent * 1.5);
-  const grid = new THREE.GridHelper(size, Math.max(1, Math.round(size)), 0x3a3f47, 0x262a30);
-  grid.position.y = -extent / 2 - 0.5;
+function addGrid(
+  scene: THREE.Scene,
+  bounds: SceneBounds,
+  disposables: Disposable[],
+): void {
+  const size = Math.ceil(bounds.radius * 2.4);
+  const grid = new THREE.GridHelper(
+    size,
+    Math.max(1, Math.round(size)),
+    0x3a3f47,
+    0x262a30,
+  );
+  // 网格铺在建筑底面，对准包围盒中心（投影图坐标不以原点为中心）。
+  grid.position.set(
+    bounds.center.x,
+    bounds.center.y - bounds.radius,
+    bounds.center.z,
+  );
   scene.add(grid);
   disposables.push(grid);
 }
 
-/** 三层的顶点包围盒里最大的半边长。 */
-function extentOfLayers(
-  geometry: ReturnType<typeof buildTexturedGeometry>,
-): number {
-  let maxAbs = 1;
-  for (const layer of [geometry.opaque, geometry.cutout, geometry.translucent]) {
-    const positions = layer.positions;
-    for (let index = 0; index < positions.length; index += 1) {
-      const value = Math.abs(positions[index]);
-      if (value > maxAbs) {
-        maxAbs = value;
-      }
-    }
+/** 场景包围盒：中心点与半径。 */
+type SceneBounds = {
+  center: THREE.Vector3;
+  /** 从中心到最远顶点的距离，用来定正交相机的视野与远平面。 */
+  radius: number;
+};
+
+/**
+ * 从一组顶点里量出真实的包围盒。
+ *
+ * **必须用 min/max 求中心**，不能只取绝对值最大：投影图的方块用世界绝对
+ * 坐标（y 可能从 60 开始、z 从 183 开始），只取 |坐标| 会把原点也算进去，
+ * 中心算错，整栋建筑就被推出视野。
+ */
+function boundsOfPositions(positions: ArrayLike<number>): SceneBounds {
+  if (positions.length < 3) {
+    return { center: new THREE.Vector3(0, 0, 0), radius: 8 };
   }
-  return maxAbs * 1.3 + 4;
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (let index = 0; index + 2 < positions.length; index += 3) {
+    const x = positions[index];
+    const y = positions[index + 1];
+    const z = positions[index + 2];
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  }
+  const center = new THREE.Vector3(
+    (minX + maxX) / 2,
+    (minY + maxY) / 2,
+    (minZ + maxZ) / 2,
+  );
+  const radius = Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2 + 1;
+  return { center, radius };
 }
 
-/** 用体素分布的包围盒估算场景尺度。 */
-function estimateExtent(data: ReturnType<typeof buildRenderData>): number {
-  let maxAbs = 1;
-  for (let index = 0; index < data.positions.length; index += 1) {
-    const abs = Math.abs(data.positions[index]);
-    if (abs > maxAbs) {
-      maxAbs = abs;
-    }
+/** 三层几何合起来的包围盒。 */
+function boundsOfLayers(
+  geometry: ReturnType<typeof buildTexturedGeometry>,
+): SceneBounds {
+  const layers = [geometry.opaque, geometry.cutout, geometry.translucent];
+  const total = layers.reduce((sum, layer) => sum + layer.positions.length, 0);
+  if (total === 0) {
+    return { center: new THREE.Vector3(0, 0, 0), radius: 8 };
   }
-  return maxAbs * 1.4 + 4;
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const layer of layers) {
+    merged.set(layer.positions, offset);
+    offset += layer.positions.length;
+  }
+  return boundsOfPositions(merged);
+}
+
+/** 纯色路径的包围盒（每个体素是一个整方块，多留半格）。 */
+function boundsOfSolid(data: ReturnType<typeof buildRenderData>): SceneBounds {
+  const bounds = boundsOfPositions(data.positions);
+  return { center: bounds.center, radius: bounds.radius + 0.5 };
 }
