@@ -100,3 +100,6 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 - `list_schematics` scans each game directory once instead of once per instance. With 134 instances sharing one .minecraft the old code walked the same tree 134 times; measured 15.1 s → 119 ms on the same store.
 - The instances page mounts a launch panel only for the selected instance instead of one per row (134 cards before), and starts each panel with the instance name rather than its UUID.
 - Loader groups on the instances page can be collapsed.
+### Performance
+
+- Reading a `.litematic`'s metadata inflates only as far as the root scalars and then stops. Schematics compress at ~55:1, so the old full inflate cost 3.6 s for 1649 files; the whole listing is now 1.40 s instead of 3.99 s.

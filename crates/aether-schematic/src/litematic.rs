@@ -19,7 +19,7 @@
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::nbt::{NbtError, Value, read_gzip_nbt};
+use crate::nbt::{NbtError, Value, read_gzip_nbt, read_gzip_nbt_without_regions};
 
 /// 单个区域允许的最大方块数（预览上限）。
 pub const MAX_REGION_VOLUME: i64 = 8 * 1024 * 1024;
@@ -161,7 +161,9 @@ fn metadata_from_root(root: &Value) -> Result<LitematicMetadata, SchematicError>
 /// 文件不是合法的 gzip NBT 或缺少必需的 litematic 字段时返回
 /// [`SchematicError`]。
 pub fn read_metadata(bytes: &[u8]) -> Result<LitematicMetadata, SchematicError> {
-    let (_, root) = read_gzip_nbt(bytes)?;
+    // 跳过 `Regions`：列表页只要根上的几个小字段，区块图像有几十万项，解析它
+    // 是 1649 个文件 9 秒耗时的来源。
+    let (_, root) = read_gzip_nbt_without_regions(bytes)?;
     metadata_from_root(&root)
 }
 

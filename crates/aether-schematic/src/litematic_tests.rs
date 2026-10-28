@@ -376,3 +376,36 @@ fn nearest_release_maps_data_versions() {
     assert_eq!(nearest_release(4189), Some("1.21.4"));
     assert_eq!(nearest_release(999_999), Some("1.21.8"));
 }
+
+#[test]
+fn metadata_is_read_even_when_regions_comes_first() {
+    // Litematica 的字段顺序不固定：`Regions` 可能排在 `Metadata` 前面。
+    // 提前停止解压时不能因此漏掉 `Version` 这些根上的小字段。
+    let mut root = RootBuilder::new();
+    root.begin_compound("Regions");
+    root.begin_compound("castle");
+    root.begin_compound("Size");
+    root.int("x", 1);
+    root.int("y", 1);
+    root.int("z", 1);
+    root.end_compound();
+    root.end_compound(); // castle
+    root.end_compound(); // Regions
+    root.int("Version", 6);
+    root.int("MinecraftDataVersion", 3955);
+    root.begin_compound("Metadata");
+    root.int("RegionCount", 1);
+    root.int("TotalBlocks", 1);
+    root.int("TotalVolume", 1);
+    root.begin_compound("EnclosingSize");
+    root.int("x", 1);
+    root.int("y", 1);
+    root.int("z", 1);
+    root.end_compound();
+    root.end_compound(); // Metadata
+
+    let metadata = read_metadata(&root.gzip()).expect("metadata");
+    assert_eq!(metadata.format_version, 6);
+    assert_eq!(metadata.minecraft_data_version, 3955);
+    assert_eq!(metadata.region_count, 1);
+}
