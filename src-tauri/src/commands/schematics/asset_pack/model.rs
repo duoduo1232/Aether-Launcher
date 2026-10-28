@@ -398,19 +398,21 @@ fn parse_element(value: &serde_json::Value) -> Option<RawElement> {
 
 /// 把一个面变成四边形。
 ///
+/// 顶点顺序与 UV 必须按 Minecraft 自己的约定配成对，否则贴图会整体旋转：
+/// 原版 `BakedQuad` 的四个顶点是「左上、左下、右下、右上」，`uv` 里的
+/// `[u0, v0, u1, v1]` 是贴图上的一个矩形（`v0` 在上、`v1` 在下）。所以
+/// 顶点 0 取 `(u0, v0)`、顶点 1 取 `(u0, v1)`、顶点 2 取 `(u1, v1)`、
+/// 顶点 3 取 `(u1, v0)`。
+///
 /// UV 先按「贴图自身」归一化（`uv` 里是 0..16 的像素坐标），图集偏移之后由
-/// [`apply_atlas_slots`] 统一补上。这样同一个模型换个图集位置不用重新烘焙。
+/// [`apply_atlas_slots`] 统一补上。
 fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, layer: RenderLayer) -> Quad {
     let from = element.from.map(|value| value / 16.0);
     let to = element.to.map(|value| value / 16.0);
 
     let [u0, v0, u1, v1] = raw_face.uv;
-    let uvs = [
-        [u0 / 16.0, v1 / 16.0],
-        [u1 / 16.0, v1 / 16.0],
-        [u1 / 16.0, v0 / 16.0],
-        [u0 / 16.0, v0 / 16.0],
-    ];
+    let (u0, v0, u1, v1) = (u0 / 16.0, v0 / 16.0, u1 / 16.0, v1 / 16.0);
+    let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
 
     Quad {
         positions: face_corners(face, from, to),
@@ -451,17 +453,29 @@ pub(super) fn apply_atlas_slots(
     }
 }
 
-/// 六个面的四个角，逆时针（从外面看）。
+/// 六个面的四个角，顺序与 [`build_quad`] 里的 UV 一一对应。
+///
+/// Minecraft 的坐标：`-Z` 是北，`+X` 是东，`+Y` 是上。每个面的第 0 个顶点是
+/// 从外面看时视觉上的左上角 —— 这是原版烘焙器自己的约定，换个顺序贴图就会
+/// 转 90° 或镜像。
 fn face_corners(face: Face, from: [f32; 3], to: [f32; 3]) -> [[f32; 3]; 4] {
-    let [x0, y0, z0] = from;
-    let [x1, y1, z1] = to;
+    // 模型里允许 `from` 大于 `to`（原版有些"内表面"就是这么写的，比如
+    // `cube_bottom_top_inner_faces` 的第二个盒子）。先归一化成 min/max，
+    // 否则角点的左右会颠倒，绕序和贴图一起反掉。
+    let x0 = from[0].min(to[0]);
+    let y0 = from[1].min(to[1]);
+    let z0 = from[2].min(to[2]);
+    let x1 = from[0].max(to[0]);
+    let y1 = from[1].max(to[1]);
+    let z1 = from[2].max(to[2]);
     match face {
-        Face::Down => [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
-        Face::Up => [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
-        Face::North => [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]],
-        Face::South => [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
-        Face::West => [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
-        Face::East => [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]],
+        // 从下往上看：左上 = (x1,z0)，逆时针走一圈（法线朝 -Y）。
+        Face::Down => [[x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y0, z0]],
+        Face::Up => [[x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0]],
+        Face::North => [[x1, y1, z0], [x1, y0, z0], [x0, y0, z0], [x0, y1, z0]],
+        Face::South => [[x0, y1, z1], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1]],
+        Face::West => [[x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]],
+        Face::East => [[x1, y1, z1], [x1, y0, z1], [x1, y0, z0], [x1, y1, z0]],
     }
 }
 

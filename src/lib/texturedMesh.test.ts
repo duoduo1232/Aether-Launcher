@@ -65,6 +65,81 @@ function packWith(blocks: Record<string, AssetVariant[]>): AssetPack {
   };
 }
 
+/**
+ * 旋转矩阵必须与 Minecraft 一致。
+ *
+ * 方向搞反的话几何和法线会一起翻向：面朝里、贴图镜像，画面上就是「材质和
+ * 方块对不上」。这里用一个不对称的四边形钉住旋转结果。
+ */
+describe("variant rotation", () => {
+  /** 只画南面（+Z）的一个半高盒子，便于观察旋转。 */
+  function southOnly(): AssetVariant {
+    return {
+      when: [],
+      rotationX: 0,
+      rotationY: 0,
+      model: {
+        quads: [
+          {
+            positions: [
+              [0, 0, 1],
+              [0, 1, 1],
+              [1, 1, 1],
+              [1, 0, 1],
+            ],
+            uvs: [
+              [0, 0],
+              [0, 1],
+              [1, 1],
+              [1, 0],
+            ],
+            normal: [0, 0, 1],
+            cullface: null,
+            layer: "opaque",
+            uv: ["minecraft:block/test", "minecraft:block/test"],
+          },
+        ],
+        textureIds: ["minecraft:block/test"],
+        fullCube: false,
+      },
+    };
+  }
+
+  function firstVertex(rotationY: number): [number, number, number] {
+    const variant = { ...southOnly(), rotationY };
+    const geometry = buildTexturedGeometry(
+      detailWith(["minecraft:test"]),
+      packWith({ "minecraft:test": [variant] }),
+    );
+    return [
+      geometry.opaque.positions[0],
+      geometry.opaque.positions[1],
+      geometry.opaque.positions[2],
+    ];
+  }
+
+  it("绕 Y 旋转 90° 符合标准右手系", () => {
+    // 点 (0,0,1) 相对方块中心是 (0,0,+0.5)，标准 Y 旋转 90° 后到 (-0.5,0,0)，
+    // 也就是绝对坐标 (0,0,0)。
+    const [x, y, z] = firstVertex(90);
+    expect(x).toBeCloseTo(0, 5);
+    expect(y).toBeCloseTo(0, 5);
+    expect(z).toBeCloseTo(0, 5);
+  });
+
+  it("绕 Y 旋转 180° 把 +Z 面转到 -Z", () => {
+    const [x, y, z] = firstVertex(180);
+    expect(x).toBeCloseTo(1, 5);
+    expect(y).toBeCloseTo(0, 5);
+    expect(z).toBeCloseTo(0, 5);
+  });
+
+  it("没有旋转时顶点原样保留", () => {
+    const [x, y, z] = firstVertex(0);
+    expect([x, y, z]).toEqual([0, 0, 1]);
+  });
+});
+
 function detailWith(
   palette: string[],
   size: [number, number, number] = [1, 1, 1],

@@ -324,12 +324,15 @@ function rotate(
     z -= 0.5;
   }
 
+  // 旋转矩阵必须与 Minecraft 一致，否则几何和法线会一起翻向 —— 面朝里、
+  // 贴图镜像，看起来就是「材质和方块对不上」。
   const radiansX = (rotationX * Math.PI) / 180;
   if (radiansX !== 0) {
     const cos = Math.round(Math.cos(radiansX));
     const sin = Math.round(Math.sin(radiansX));
-    const ny = y * cos - z * sin;
-    const nz = y * sin + z * cos;
+    // 绕 X 轴：y' = y·cos + z·sin，z' = -y·sin + z·cos。
+    const ny = y * cos + z * sin;
+    const nz = -y * sin + z * cos;
     y = ny;
     z = nz;
   }
@@ -338,8 +341,9 @@ function rotate(
   if (radiansY !== 0) {
     const cos = Math.round(Math.cos(radiansY));
     const sin = Math.round(Math.sin(radiansY));
-    const nx = x * cos + z * sin;
-    const nz = -x * sin + z * cos;
+    // 绕 Y 轴：x' = x·cos - z·sin，z' = x·sin + z·cos。
+    const nx = x * cos - z * sin;
+    const nz = x * sin + z * cos;
     x = nx;
     z = nz;
   }

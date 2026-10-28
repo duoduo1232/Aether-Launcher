@@ -302,6 +302,47 @@ mod tests {
             assert!(slot.u0 < slot.u1 && slot.v0 < slot.v1, "{id} is empty");
         }
     }
+
+    /// 每个面的顶点从外侧看必须是逆时针，否则会被当背面剔除或贴图镜像。
+    #[test]
+    fn quad_winding_faces_outward() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
+
+        let mut checked = 0;
+        for (block, bindings) in &pack.blocks {
+            for binding in bindings {
+                for quad in &binding.model.quads {
+                    let [p0, p1, p2, _] = quad.positions;
+                    let edge1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                    let edge2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+                    let cross = [
+                        edge1[1] * edge2[2] - edge1[2] * edge2[1],
+                        edge1[2] * edge2[0] - edge1[0] * edge2[2],
+                        edge1[0] * edge2[1] - edge1[1] * edge2[0],
+                    ];
+                    let dot = cross[0] * quad.normal[0]
+                        + cross[1] * quad.normal[1]
+                        + cross[2] * quad.normal[2];
+                    // 零面积的四边形（模型里的退化面）没有朝向可言，跳过。
+                    let area =
+                        (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+                    if area < 1e-9 {
+                        continue;
+                    }
+                    assert!(
+                        dot > 0.0,
+                        "winding points away from the normal: block {block} p0 {p0:?} p1 {p1:?} p2 {p2:?} cross {cross:?} normal {:?}",
+                        quad.normal
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no quads to check");
+    }
 }
 
 #[cfg(test)]
