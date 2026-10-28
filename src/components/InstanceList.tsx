@@ -14,17 +14,19 @@ type InstanceListProps = {
   onDelete?: (instance: InstanceSummary) => void;
   /** 正在删除中的实例 ID，按钮在此期间禁用 */
   deletingId?: string | null;
+  /** 当前选中的实例；点击行时切换，用来决定显示哪一张启动面板 */
+  selectedId?: string | null;
+  onSelect?: (instance: InstanceSummary) => void;
 };
 
 /**
- * 实例列表：只负责展示、搜索过滤后的选中列表，不承载生命周期操作——
- * 启动/停止的唯一入口是列表下方的 `InstanceLaunchPanel`。
+ * 实例列表：只负责展示，不承载生命周期操作。
+ *
+ * 启动/停止的唯一入口是列表下方那张 `InstanceLaunchPanel`——点击一行来选中它。
+ * 之前给每个实例都挂一张面板，134 个实例会铺出 134 张卡，页面既慢又没法用。
  *
  * 删除按钮放在行尾：删的是 Aether 的实例记录，不碰 `.minecraft` 里的游戏文件，
  * 所以不需要额外警告，但用户仍会被问一次（确认交给调用方）。
- *
- * 用 `<ul>` 而不是表格：一行里既有徽章又有次要信息，语义上是「卡片列表」，
- * 窄窗口下也只需要改 `grid-template-columns`。
  */
 export function InstanceList({
   instances,
@@ -32,40 +34,53 @@ export function InstanceList({
   javaLabel,
   onDelete,
   deletingId = null,
+  selectedId = null,
+  onSelect,
 }: InstanceListProps) {
   return (
     <ul className="instance-list">
       {instances.map((instance) => {
         const status = describeInstanceState(instance.state);
         const missingGameDirectory = instance.gameDirectory === null;
+        const selected = selectedId === instance.id;
 
         return (
-          <li className="instance-row" key={instance.id}>
-            <span className="instance-badge" aria-hidden="true">
-              {instance.version.slice(0, 6)}
-            </span>
+          <li
+            className={selected ? "instance-row instance-row-selected" : "instance-row"}
+            key={instance.id}
+          >
+            <button
+              type="button"
+              className="instance-select"
+              aria-pressed={selected}
+              onClick={() => onSelect?.(instance)}
+            >
+              <span className="instance-badge" aria-hidden="true">
+                {instance.version.slice(0, 6)}
+              </span>
 
-            <div className="instance-primary">
-              <Text weight="semibold" className="instance-name">
-                {instance.name}
-              </Text>
-              <Text className="muted instance-meta">
-                {instance.version}
-                <span className="meta-separator" aria-hidden="true">
-                  ·
-                </span>
-                {javaLabel ?? "Java 未检测"}
-                <span className="meta-separator" aria-hidden="true">
-                  ·
-                </span>
-                {formatMemoryMiB(memoryMiB)}
-              </Text>
-              {missingGameDirectory ? (
-                <Text className="muted instance-warning">
-                  <Warning24Regular /> 还没设置游戏目录，投影和启动都用不了
+              <div className="instance-primary">
+                <Text weight="semibold" className="instance-name">
+                  {instance.name}
                 </Text>
-              ) : null}
-            </div>
+                <Text className="muted instance-meta">
+                  {instance.version}
+                  <span className="meta-separator" aria-hidden="true">
+                    ·
+                  </span>
+                  {javaLabel ?? "Java 未检测"}
+                  <span className="meta-separator" aria-hidden="true">
+                    ·
+                  </span>
+                  {formatMemoryMiB(memoryMiB)}
+                </Text>
+                {missingGameDirectory ? (
+                  <Text className="muted instance-warning">
+                    <Warning24Regular /> 还没设置游戏目录，投影和启动都用不了
+                  </Text>
+                ) : null}
+              </div>
+            </button>
 
             <Tooltip content={status.hint} relationship="description">
               <Badge appearance="tint" color={status.tone} className="status-chip">

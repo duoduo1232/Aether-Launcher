@@ -1041,6 +1041,48 @@ button { letter-spacing: 0; }
   align-items: center;
   gap: 8px;
   padding-inline-start: 4px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+
+.instance-group-heading:hover {
+  color: var(--colorBrandForeground1);
+}
+
+/* 折叠箭头：默认朝下（展开），折叠时回到朝右。 */
+.group-chevron {
+  transition: transform 120ms ease;
+  transform: rotate(90deg);
+}
+
+.group-chevron-collapsed {
+  transform: rotate(0deg);
+}
+
+/* 整行可点击选中：用它决定显示哪一张启动面板。 */
+.instance-select {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  padding: 0;
+}
+
+.instance-row-selected {
+  outline: 1px solid var(--colorBrandStroke1);
+  outline-offset: -1px;
+  border-radius: var(--borderRadiusMedium);
 }
 
 .instance-warning {

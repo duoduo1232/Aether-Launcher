@@ -10,6 +10,7 @@
 //! 文件**内容**传进来，后端按安全文件名写进指定实例；复制/移动走
 //! `paste_schematic`，同实例内整理目录和跨版本共享是同一套逻辑。
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +40,7 @@ const MAX_RENAME_ATTEMPTS: u32 = 999;
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// 投影图元数据（跨 IPC 的视图；附带数据版本对应的正式版名）。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchematicMetadataDto {
     name: String,
@@ -91,7 +92,7 @@ fn display_name(name: &str, file_name: &str) -> String {
 }
 
 /// 一个实例里的投影图列表项。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchematicSummary {
     /// 相对**所属来源目录**的路径，用 `/` 分隔（如 `城堡/主楼.litematic`）。
@@ -107,7 +108,7 @@ pub struct SchematicSummary {
 }
 
 /// 扫描时解析失败的文件，按稳定分类上报，不回显绝对路径。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FailedSchematic {
     relative_path: String,
@@ -511,15 +512,37 @@ fn source_label(source: &ScanSource) -> String {
 /// 自动识别每个实例的所有 `schematics/`（实例自己的、游戏目录根上的、
 /// `versions/<版本>/` 下的），按实例分组返回。
 /// 没有投影也没有解析失败文件的实例直接跳过——列表里只出现有投影的版本。
+///
+/// # 为什么按游戏目录去重
+///
+/// 多个实例常常共用同一个 `.minecraft`（本机 134 个实例都指向 `E:\a\.minecraft`）。
+/// 它们的 `versions/*/schematics` 完全一样，逐个实例扫一遍等于把同一个目录重复
+/// 遍历上百次 —— 实测 134 个实例就能让页面一分钟都出不来。
+///
+/// 所以先用**游戏目录 + 实例私有目录**算出一个扫描键：同一个键只真正扫一次，
+/// 结果按实例复用。实例自己的 `schematics/` 不共享，键里带上实例 ID 即可。
 #[tauri::command]
 pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicListing, String> {
     let root = instance_store_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let listing = list_instances(&root)
             .map_err(|error| format!("cannot scan the instance store: {error}"))?;
+
+        // 已经扫过的游戏目录 -> 那一刻的扫描结果。同一目录只扫一次。
+        let mut scanned: HashMap<ScanKey, (Vec<SchematicSummary>, Vec<FailedSchematic>)> =
+            HashMap::new();
         let mut instances = Vec::new();
+
         for instance in &listing.instances {
-            let (schematics, failed) = scan_schematics(instance);
+            let key = ScanKey::of(instance);
+            let (schematics, failed) = match scanned.get(&key) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let result = scan_schematics(instance);
+                    scanned.insert(key, result.clone());
+                    result
+                }
+            };
             if schematics.is_empty() && failed.is_empty() {
                 continue;
             }
@@ -547,6 +570,24 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
     })
     .await
     .map_err(|_| "schematic listing task failed".to_owned())?
+}
+
+/// 决定「这次扫描能不能复用上次结果」的键。
+///
+/// 游戏目录相同、且实例私有目录相同，扫出来的东西就一样。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ScanKey {
+    game_directory: PathBuf,
+    instance_root: PathBuf,
+}
+
+impl ScanKey {
+    fn of(instance: &GameInstance) -> Self {
+        Self {
+            game_directory: resolve_game_directory(instance),
+            instance_root: instance.root.clone(),
+        }
+    }
 }
 
 /// 读取并完整解码指定实例里的一个投影文件，返回预览数据。

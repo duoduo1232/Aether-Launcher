@@ -23,6 +23,8 @@ import { loadMemoryMiB } from "../lib/settings";
 
 type InstanceLaunchPanelProps = {
   instanceId: string;
+  /** 面板标题：实例名。ID 只用于命令，不显示给用户。 */
+  title?: string;
   /** 实例清单里的上次已知状态；面板在拿到任何命令结果前只显示「未验证」式标签 */
   initialState?: InstanceState;
   disabled?: boolean;
@@ -38,6 +40,7 @@ type InstanceLaunchPanelProps = {
  */
 export function InstanceLaunchPanel({
   instanceId,
+  title,
   initialState = "ready",
   disabled = false,
 }: InstanceLaunchPanelProps) {
@@ -121,7 +124,7 @@ export function InstanceLaunchPanel({
     <div className="launch-panel">
       <div className="launch-panel-heading">
         <Text weight="semibold" className="launch-panel-title">
-          {instanceId}
+          {title ?? instanceId}
         </Text>
         <Badge appearance="tint" color={view.tone}>
           {view.label}

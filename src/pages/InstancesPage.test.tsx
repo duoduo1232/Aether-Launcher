@@ -69,7 +69,7 @@ describe("InstancesPage", () => {
     enableTauri();
     vi.mocked(invoke).mockResolvedValue({
       instances: [
-        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" },
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
         { id: "b", name: "红石实验", version: "1.20.1", state: "running" },
       ],
       skipped: [],
@@ -118,8 +118,8 @@ describe("InstancesPage", () => {
     enableTauri();
     vi.mocked(invoke).mockResolvedValue({
       instances: [
-        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" },
-        { id: "b", name: "红石实验", version: "1.20.1", state: "ready" },
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
+        { id: "b", name: "红石实验", version: "1.20.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
       ],
       skipped: [],
     });
@@ -138,12 +138,12 @@ describe("InstancesPage", () => {
     );
   });
 
-  it("mounts a launch panel per listed instance", async () => {
+  it("shows one launch panel for the selected instance, not one per instance", async () => {
     enableTauri();
     vi.mocked(invoke).mockResolvedValue({
       instances: [
-        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" },
-        { id: "b", name: "红石实验", version: "1.20.1", state: "ready" },
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
+        { id: "b", name: "红石实验", version: "1.20.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
       ],
       skipped: [],
     });
@@ -153,21 +153,13 @@ describe("InstancesPage", () => {
     await waitFor(() =>
       expect(screen.getByText("生存 1.21")).toBeInTheDocument(),
     );
-    expect(await screen.findAllByText("未验证")).toHaveLength(2);
-  });
+    // 一进来没有面板：给 134 个实例各挂一张会把页面拖垮。
+    expect(screen.queryAllByRole("button", { name: "启动" })).toHaveLength(0);
+    expect(screen.getByText("点上面的实例来启动它。")).toBeInTheDocument();
 
-  it("exposes exactly one launch control per instance on the whole page", async () => {
-    enableTauri();
-    vi.mocked(invoke).mockResolvedValue({
-      instances: [{ id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" }],
-      skipped: [],
-    });
-
-    render(<InstancesPage page={page} />);
-
-    await waitFor(() =>
-      expect(screen.getByText("生存 1.21")).toBeInTheDocument(),
-    );
+    // 点第一行：只出现它的一张面板。
+    fireEvent.click(screen.getByText("生存 1.21"));
+    expect(await screen.findByRole("button", { name: "启动" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "启动" })).toHaveLength(1);
   });
 
@@ -175,16 +167,39 @@ describe("InstancesPage", () => {
     enableTauri();
     vi.mocked(invoke).mockResolvedValue({
       instances: [
-        { id: "a", name: "生存 1.21", version: "1.21.1", state: "running" },
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "running", category: "vanilla", gameDirectory: "/mc" },
       ],
       skipped: [],
     });
 
     render(<InstancesPage page={page} />);
 
+    fireEvent.click(await screen.findByText("生存 1.21"));
     expect(
       await screen.findByText("运行中（未验证）"),
     ).toBeInTheDocument();
+  });
+
+  it("collapses a loader group and hides its rows", async () => {
+    enableTauri();
+    vi.mocked(invoke).mockResolvedValue({
+      instances: [
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
+      ],
+      skipped: [],
+    });
+
+    render(<InstancesPage page={page} />);
+    await waitFor(() =>
+      expect(screen.getByText("生存 1.21")).toBeInTheDocument(),
+    );
+
+    const heading = screen.getByRole("button", { name: /原版游戏/ });
+    expect(heading).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(heading);
+
+    expect(heading).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("生存 1.21")).not.toBeInTheDocument();
   });
 
   it("starts through the single launch control with exactly one IPC pair", async () => {
@@ -192,7 +207,7 @@ describe("InstancesPage", () => {
     mockCommands({
       list_instances: {
         instances: [
-          { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" },
+          { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
         ],
         skipped: [],
       },
@@ -201,6 +216,8 @@ describe("InstancesPage", () => {
     });
 
     render(<InstancesPage page={page} />);
+    // 先点行选中实例，面板才会出现。
+    fireEvent.click(await screen.findByText("生存 1.21"));
     const start = await screen.findByRole("button", { name: "启动" });
     fireEvent.click(start);
 
@@ -226,7 +243,7 @@ describe("InstancesPage", () => {
       if (cmd === "list_instances") {
         return Promise.resolve({
           instances: [
-            { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready" },
+            { id: "a", name: "生存 1.21", version: "1.21.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
           ],
           skipped: [],
         });
@@ -240,6 +257,7 @@ describe("InstancesPage", () => {
     }) as unknown as typeof invoke);
 
     render(<InstancesPage page={page} />);
+    fireEvent.click(await screen.findByText("生存 1.21"));
     const start = await screen.findByRole("button", { name: "启动" });
     fireEvent.click(start);
     fireEvent.click(start);
@@ -265,8 +283,8 @@ describe("InstancesPage", () => {
     enableTauri();
     vi.mocked(invoke).mockResolvedValue({
       instances: [
-        { id: "a", name: "生存 1.21", version: "1.21.1", state: "running" },
-        { id: "b", name: "红石实验", version: "1.20.1", state: "ready" },
+        { id: "a", name: "生存 1.21", version: "1.21.1", state: "running", category: "vanilla", gameDirectory: "/mc" },
+        { id: "b", name: "红石实验", version: "1.20.1", state: "ready", category: "vanilla", gameDirectory: "/mc" },
       ],
       skipped: [],
     });

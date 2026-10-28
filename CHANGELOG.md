@@ -95,3 +95,8 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 
 - Delete an instance from the list. Only the instance record is removed; `versions/`, `saves/`, `mods/` and `schematics/` in the user's .minecraft are never touched, and a test asserts the game directory is unchanged.
 - Instances are grouped by loader (原版游戏 / Forge / NeoForge / Fabric / Quilt / LiteLoader / 整合包), derived from the version name.
+### Performance
+
+- `list_schematics` scans each game directory once instead of once per instance. With 134 instances sharing one .minecraft the old code walked the same tree 134 times; measured 15.1 s → 119 ms on the same store.
+- The instances page mounts a launch panel only for the selected instance instead of one per row (134 cards before), and starts each panel with the instance name rather than its UUID.
+- Loader groups on the instances page can be collapsed.

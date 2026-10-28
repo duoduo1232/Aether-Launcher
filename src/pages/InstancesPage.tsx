@@ -10,6 +10,7 @@ import {
   Add24Regular,
   ArrowSync24Regular,
   BoxMultiple24Regular,
+  ChevronRight24Regular,
   Warning24Regular,
 } from "@fluentui/react-icons";
 import { useCallback, useMemo, useState } from "react";
@@ -126,6 +127,28 @@ export function InstancesPage({ page }: InstancesPageProps) {
   }, [visible]);
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  /** 折叠的分组；默认全部展开，未出现在集合里的就是展开。 */
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<InstanceCategory>>(
+    () => new Set(),
+  );
+  const toggleGroup = useCallback((category: InstanceCategory) => {
+    setCollapsedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  }, []);
+  /** 当前选中要启动的实例：只给它显示一张启动面板，不再给 134 个实例各挂一张。 */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** 选中的实例对象；筛选后它不在列表里时就不显示面板。 */
+  const selected = useMemo(
+    () => visible.find((instance) => instance.id === selectedId) ?? null,
+    [visible, selectedId],
+  );
 
   /**
    * 删实例记录。只删 Aether 的记录，`.minecraft` 里的游戏文件不动，所以提示里
@@ -279,26 +302,42 @@ export function InstancesPage({ page }: InstancesPageProps) {
           <div className="instance-groups">
             {groups.map(([category, members]) => (
               <section className="instance-group" key={category}>
-                <div className="instance-group-heading">
+                <button
+                  type="button"
+                  className="instance-group-heading"
+                  aria-expanded={!collapsedGroups.has(category)}
+                  onClick={() => toggleGroup(category)}
+                >
+                  <ChevronRight24Regular
+                    className={
+                      collapsedGroups.has(category)
+                        ? "group-chevron group-chevron-collapsed"
+                        : "group-chevron"
+                    }
+                  />
                   <Text weight="semibold">{CATEGORY_LABEL[category]}</Text>
                   <Badge appearance="tint">{members.length}</Badge>
-                </div>
-                <InstanceList
-                  instances={members}
-                  memoryMiB={memoryMiB}
-                  javaLabel={javaKey === null ? null : formatJavaLabel(javaKey)}
-                  onDelete={(instance) => {
-                    // 说清楚删的是什么，再问一次。删的是实例记录，不碰游戏文件。
-                    const confirmed = window.confirm(
-                      `删除实例「${instance.name}」？\n\n` +
-                        "只删除 Aether 的实例记录。.minecraft 里的版本、存档、模组、投影都不会动。",
-                    );
-                    if (confirmed) {
-                      void handleDelete(instance);
-                    }
-                  }}
-                  deletingId={deletingId}
-                />
+                </button>
+                {collapsedGroups.has(category) ? null : (
+                  <InstanceList
+                    instances={members}
+                    memoryMiB={memoryMiB}
+                    javaLabel={javaKey === null ? null : formatJavaLabel(javaKey)}
+                    selectedId={selectedId}
+                    onSelect={(instance) => setSelectedId(instance.id)}
+                    onDelete={(instance) => {
+                      // 说清楚删的是什么，再问一次。删的是实例记录，不碰游戏文件。
+                      const confirmed = window.confirm(
+                        `删除实例「${instance.name}」？\n\n` +
+                          "只删除 Aether 的实例记录。.minecraft 里的版本、存档、模组、投影都不会动。",
+                      );
+                      if (confirmed) {
+                        void handleDelete(instance);
+                      }
+                    }}
+                    deletingId={deletingId}
+                  />
+                )}
               </section>
             ))}
           </div>
@@ -308,16 +347,21 @@ export function InstancesPage({ page }: InstancesPageProps) {
           所以在列表下方按实例逐个挂面板，而不是塞进行内。
           面板是每个实例唯一的启动/停止入口。
         */}
-        {visible.length > 0 ? (
-          <div className="launch-panel-grid">
-            {visible.map((instance) => (
-              <InstanceLaunchPanel
-                key={instance.id}
-                instanceId={instance.id}
-                initialState={instance.state}
-              />
-            ))}
-          </div>
+        {/*
+          启动面板只给**选中的那一个实例**。以前是给每个实例都挂一张，134 个实例
+          就铺出 134 张卡，既慢又没法用。点击列表行来选中。
+        */}
+        {selected ? (
+          <InstanceLaunchPanel
+            key={selected.id}
+            instanceId={selected.id}
+            title={selected.name}
+            initialState={selected.state}
+          />
+        ) : visible.length > 0 ? (
+          <Text className="muted">
+            点上面的实例来启动它。
+          </Text>
         ) : null}
 
         {skipped.length > 0 ? (
