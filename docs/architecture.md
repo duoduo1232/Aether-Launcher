@@ -206,6 +206,12 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 - **名字为空或 `Unnamed` 时回退到文件名**：很多投影的作者只填作者和方块数，`Metadata.Name` 留着 Litematica 的占位值 `Unnamed`。`display_name` 把空白和 `Unnamed`（大小写不敏感）都当成没填名字，用文件名去掉 `.litematic` 后显示。
 - **游戏目录只来自实例记录**：Aether 是独立启动器，不从 PCL2、HMCL 等别的启动器读配置，也不扫描磁盘猜路径。`GameInstance::game_directory` 是唯一来源，由后端在用户选目录时写入。老记录（这个字段加入之前创建的实例）没有它，因此扫不到任何东西；`list_schematics` 会报出 `missingGameDirectory` 数量，界面据此显示「设置游戏目录」入口，用户选一次后由 `apply_game_directory` 批量写回 —— 写前先把要改的 `instance.json` 备份到 `instances/.backup-<时间戳>/`，已经设置过的不动。
 - **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。
+- **列表页只读头部，而且并行读**：一个 `.litematic` 解压后可以有几 GB（本机 1723 个就是 5.78 GB），列表页却只要根上那几个标量。因此有三层减速措施，缺一层页面就像卡死：
+  - `read_metadata_from` 直接从文件流解压，凑够 `Version` / `MinecraftDataVersion` / `Metadata` 就停，**不把整份文件读进内存**；
+  - 遍历目录只收集待解析文件，解析交给线程池（最多 8 线程，少于 16 个文件时走串行，那时开线程反而更慢）；
+  - `versions/` 的目录名按**游戏目录**缓存：共用同一个 `.minecraft` 的实例来源完全相同，否则 134 个实例会各枚举一遍。
+  - 实测（134 个实例、1723 个文件、压缩后 101 MB）：来源枚举 816 ms → 1 ms，解析 1560 ms → 500 ms。
+  - 前端同样不能一次渲染全部：一个版本的 `schematics/` 根上能有 778 个文件，文件夹默认折叠，根层每页 100 行。
 
 | 命令 | 作用 |
 | --- | --- |
