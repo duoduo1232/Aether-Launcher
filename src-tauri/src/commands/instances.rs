@@ -23,6 +23,10 @@ pub struct InstanceSummary {
     name: String,
     version: String,
     state: &'static str,
+    /// 版本类型分组，界面据此像 PCL 那样按类别折叠。
+    category: &'static str,
+    /// 这个实例的游戏目录；老记录为 `None`，界面会提示去设置。
+    game_directory: Option<String>,
 }
 
 impl InstanceSummary {
@@ -32,8 +36,68 @@ impl InstanceSummary {
             name: instance.name.clone(),
             version: instance.version.as_str().to_owned(),
             state: instance_state_label(&instance.state),
+            category: instance_category(instance.version.as_str()),
+            game_directory: instance
+                .game_directory
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
+}
+
+/// 从版本名推断实例属于哪一类。
+///
+/// 只做**名字层面的归类**，不读文件：整合包的版本名通常就是整合包名
+/// （如 `[GTCEu] GregTech Expert 2`），加载器则写在名字里（`1.12.2-forge1.12.2-…`）。
+/// 判据保守：认不出加载器、且不像纯版本号时才算整合包。
+#[must_use]
+pub fn instance_category(version: &str) -> &'static str {
+    let lowered = version.to_ascii_lowercase();
+    if lowered.contains("neoforge") {
+        return "neoforge";
+    }
+    if lowered.contains("fabric") {
+        return "fabric";
+    }
+    if lowered.contains("quilt") {
+        return "quilt";
+    }
+    if lowered.contains("forge") {
+        return "forge";
+    }
+    if lowered.contains("liteloader") {
+        return "liteloader";
+    }
+    if looks_like_vanilla_version(version) {
+        return "vanilla";
+    }
+    // 名字不像纯版本号：多半是整合包自己起的名字。
+    "modpack"
+}
+
+/// 纯版本号：只有数字、点和版本修饰词（`1.21.1`、`20w14a`、`1.12.2 2`）。
+///
+/// 名字里出现中括号、版本号以外的大段文字时不算纯版本，交给整合包那一类。
+fn looks_like_vanilla_version(version: &str) -> bool {
+    let trimmed = version.trim();
+    if trimmed.is_empty() || trimmed.len() > 32 {
+        return false;
+    }
+    if trimmed.contains(['[', ']', '【', '】', '(']) {
+        return false;
+    }
+    // 纯版本号只可能由 ASCII 组成：出现中文等字符说明是用户自己起的名字。
+    if !trimmed.is_ascii() {
+        return false;
+    }
+    // 版本号里不会有多个用空格分开的词；`All the Mods 9` 这种是整合包的名字，
+    // 纯版本号最多是 `1.12.2 2`（两个词）。
+    if trimmed.split_whitespace().count() > 2 {
+        return false;
+    }
+    trimmed.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '.' | ' ' | '-' | '_')
+    })
 }
 
 /// A record that the listing pass refused to load, with a stable category
@@ -123,6 +187,25 @@ pub(crate) async fn create_instance(
     .await
     .map_err(|error| format!("instance creation task failed: {error}"))?
     .map(Some)
+}
+
+/// 删除一个实例记录。
+///
+/// **只删 `<store>/instances/<uuid>/`，绝不碰游戏文件**：`versions/`、`saves/`、
+/// `mods/`、`schematics/` 都在用户自己的 `.minecraft` 里，删实例只是让 Aether
+/// 忘掉这个版本，不是卸载游戏。这一点写在 [`aether_storage::delete_instance`]
+/// 的文档里，也有测试守着。
+#[tauri::command]
+pub(crate) async fn delete_instance(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let id = aether_core::InstanceId::parse(&id).map_err(|_| "invalid instance ID".to_owned())?;
+    let root = instance_store_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        aether_storage::delete_instance(&root, id)
+            .map(|_| ())
+            .map_err(|error| format!("cannot delete the instance: {error}"))
+    })
+    .await
+    .map_err(|error| format!("delete task failed: {error}"))?
 }
 
 /// 让用户选择一个 `.minecraft` 作为游戏目录；取消时返回 `None`。
@@ -232,5 +315,37 @@ mod tests {
         ] {
             assert_eq!(instance_state_label(&state), label);
         }
+    }
+}
+
+#[cfg(test)]
+mod category_tests {
+    use super::instance_category;
+
+    #[test]
+    fn recognises_loaders_from_the_version_name() {
+        assert_eq!(
+            instance_category("1.12.2-forge1.12.2-12.18.3.2185"),
+            "forge"
+        );
+        assert_eq!(instance_category("1.20.1-NeoForge_47.3.0"), "neoforge");
+        assert_eq!(instance_category("1.19.4-Fabric 0.16.3"), "fabric");
+        assert_eq!(instance_category("1.20.1-Quilt"), "quilt");
+        assert_eq!(instance_category("1.12.2-LiteLoader"), "liteloader");
+    }
+
+    #[test]
+    fn a_plain_version_number_is_vanilla() {
+        assert_eq!(instance_category("1.21.1"), "vanilla");
+        assert_eq!(instance_category("1.12.2 2"), "vanilla");
+        assert_eq!(instance_category("20w14a"), "vanilla");
+    }
+
+    #[test]
+    fn a_named_build_is_a_modpack() {
+        assert_eq!(instance_category("[GTCEu] GregTech Expert 2"), "modpack");
+        assert_eq!(instance_category("Better MC [FABRIC] - BMC1"), "fabric");
+        assert_eq!(instance_category("All the Mods 9 - To the Sky"), "modpack");
+        // 「原版」是用户自己起的实例名，不是版本号；ASCII 短名仍按纯版本处理。
     }
 }

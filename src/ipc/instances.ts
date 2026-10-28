@@ -20,23 +20,38 @@ declare module "./call" {
     list_instances: void;
     create_instance: { name: string; version: string };
     set_game_directory_for_all_instances: void;
+    delete_instance: { id: string };
   }
 
   interface CommandResults {
     list_instances: InstanceListing;
     create_instance: InstanceSummary | null;
     set_game_directory_for_all_instances: GameDirectoryReport;
+    delete_instance: null;
   }
 }
 
 /** 与 `aether_core::InstanceState` 的蛇形标签一一对应。 */
 export type InstanceState = "ready" | "incomplete" | "running" | "failed";
 
+export type InstanceCategory =
+  | "vanilla"
+  | "forge"
+  | "neoforge"
+  | "fabric"
+  | "quilt"
+  | "liteloader"
+  | "modpack";
+
 export type InstanceSummary = {
   id: string;
   name: string;
   version: string;
   state: InstanceState;
+  /** 版本类型分组，界面据此像 PCL 那样按类别折叠。 */
+  category: InstanceCategory;
+  /** 这个实例的游戏目录；老记录为 null，说明还没设置。 */
+  gameDirectory: string | null;
 };
 
 /** 读取失败的记录，只带稳定分类，不带文件系统路径。 */
@@ -102,4 +117,13 @@ export async function createInstance(
  */
 export async function setGameDirectoryForAllInstances(): Promise<GameDirectoryReport> {
   return callCommand("set_game_directory_for_all_instances");
+}
+/**
+ * 删除一个实例记录。
+ *
+ * 只删 Aether 的实例记录，**不会删游戏文件** —— `versions/`、`saves/`、
+ * `mods/`、`schematics/` 都在 `.minecraft` 里，删实例只是让 Aether 忘掉这个版本。
+ */
+export async function deleteInstance(id: string): Promise<void> {
+  await callCommand("delete_instance", { id });
 }

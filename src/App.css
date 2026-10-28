@@ -1022,3 +1022,30 @@ button { letter-spacing: 0; }
   overflow-y: auto;
   padding-right: 4px;
 }
+
+/* 实例按版本类型分组：和 PCL 左侧的分类一样，标题带数量。 */
+.instance-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.instance-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.instance-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline-start: 4px;
+}
+
+.instance-warning {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fontSizeBase200);
+}

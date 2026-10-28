@@ -90,3 +90,8 @@ The project follows [Semantic Versioning](https://semver.org/) once public relea
 ### Removed
 
 - The launcher-configuration fallback that looked for PCL2's `Setup.ini` to guess a game directory. Aether is a standalone launcher and must not depend on another launcher being installed; the game directory comes from its own instance records only.
+
+### Added
+
+- Delete an instance from the list. Only the instance record is removed; `versions/`, `saves/`, `mods/` and `schematics/` in the user's .minecraft are never touched, and a test asserts the game directory is unchanged.
+- Instances are grouped by loader (原版游戏 / Forge / NeoForge / Fabric / Quilt / LiteLoader / 整合包), derived from the version name.

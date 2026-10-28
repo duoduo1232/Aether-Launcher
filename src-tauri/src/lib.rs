@@ -67,6 +67,7 @@ pub fn run() {
             commands::instances::list_instances,
             commands::instances::create_instance,
             commands::instances::set_game_directory_for_all_instances,
+            commands::instances::delete_instance,
             commands::import::pick_import_folder,
             commands::import::detect_launcher_installations,
             commands::import::pick_launcher_folder,

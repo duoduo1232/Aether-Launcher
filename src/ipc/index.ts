@@ -53,12 +53,14 @@ export { callCommand, describeCommandError } from "./call";
 export {
   emptyInstanceListing,
   createInstance,
+  deleteInstance,
   listInstances,
   setGameDirectoryForAllInstances,
 } from "./instances";
 export type {
   CreateInstanceInput,
   GameDirectoryReport,
+  InstanceCategory,
   InstanceListing,
   InstanceState,
   InstanceSummary,

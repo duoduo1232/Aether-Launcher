@@ -26,6 +26,8 @@ pub mod list;
 pub mod update;
 
 pub use create::{CreateError, create_instance};
+pub use delete::{DeleteError, delete_instance};
+mod delete;
 pub use game_directory::{GameDirectoryError, GameDirectoryOutcome, apply_game_directory};
 mod game_directory;
 pub use import::execute::{

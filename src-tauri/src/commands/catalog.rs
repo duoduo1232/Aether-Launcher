@@ -2,8 +2,8 @@
 
 use std::io::Read;
 
-use aether_download::transport::http::{KernelHttpTransport, UreqKernel};
 use aether_download::transport::HttpTransport;
+use aether_download::transport::http::{KernelHttpTransport, UreqKernel};
 use aether_download::{bmclapi_mirror, fetch_first_available};
 use aether_manifest::catalog::{
     MAX_CATALOG_BYTES, VERSION_CATALOG_URL, VersionCatalog, parse_version_catalog,

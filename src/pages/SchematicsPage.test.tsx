@@ -95,13 +95,30 @@ function schematicListing(): SchematicListing {
 function instanceListing(): InstanceListing {
   return {
     instances: [
-      { id: SURVIVAL, name: "生存 1.21", version: "1.21.1", state: "ready" },
-      { id: REDSTONE, name: "红石实验", version: "1.20.1", state: "ready" },
+      // 实例列表里的游戏目录：老记录为 null。
+      {
+        id: SURVIVAL,
+        name: "生存 1.21",
+        version: "1.21.1",
+        state: "ready",
+        category: "vanilla",
+        gameDirectory: null,
+      },
+      {
+        id: REDSTONE,
+        name: "红石实验",
+        version: "1.20.1",
+        state: "ready",
+        category: "vanilla",
+        gameDirectory: null,
+      },
       {
         id: "33333333-3333-4333-8333-333333333333",
         name: "空版本",
         version: "1.19.2",
         state: "ready",
+        category: "vanilla",
+        gameDirectory: null,
       },
     ],
     skipped: [],

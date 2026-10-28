@@ -1,6 +1,8 @@
 import {
   Badge,
   Button,
+  MessageBar,
+  MessageBarBody,
   SearchBox,
   Text,
 } from "@fluentui/react-components";
@@ -23,11 +25,16 @@ import {
 } from "../components/PageState";
 import { PageHeader } from "../components/PageHeader";
 import {
+  deleteInstance,
   emptyInstanceListing,
   isTauri,
   listInstances,
 } from "../ipc";
-import type { InstanceListing, InstanceSummary } from "../ipc";
+import type {
+  InstanceCategory,
+  InstanceListing,
+  InstanceSummary,
+} from "../ipc";
 import {
   describeSkippedReason,
   filterInstances,
@@ -38,6 +45,27 @@ import { formatMemoryMiB } from "../lib/memory";
 import { useQuery } from "../lib/query";
 import { loadJavaRuntimeKey, loadMemoryMiB } from "../lib/settings";
 import type { PageDefinition } from "../navigation";
+
+/** 分组顺序：原版在最前，整合包在最后。 */
+const CATEGORY_ORDER: InstanceCategory[] = [
+  "vanilla",
+  "forge",
+  "neoforge",
+  "fabric",
+  "quilt",
+  "liteloader",
+  "modpack",
+];
+
+const CATEGORY_LABEL: Record<InstanceCategory, string> = {
+  vanilla: "原版游戏",
+  forge: "Forge",
+  neoforge: "NeoForge",
+  fabric: "Fabric",
+  quilt: "Quilt",
+  liteloader: "LiteLoader",
+  modpack: "整合包",
+};
 
 type InstancesPageProps = {
   page: PageDefinition;
@@ -55,6 +83,8 @@ export function InstancesPage({ page }: InstancesPageProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [listing, setListing] = useState<InstanceListing>(emptyInstanceListing);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [memoryMiB] = useState(loadMemoryMiB);
   const [javaKey] = useState(loadJavaRuntimeKey);
 
@@ -79,6 +109,48 @@ export function InstancesPage({ page }: InstancesPageProps) {
   const visible = useMemo(
     () => sortInstances(filterInstances(instances, query)),
     [instances, query],
+  );
+
+  /** 按版本类型分组，顺序固定，空组不显示 —— 和 PCL 左侧的分类一致。 */
+  const groups = useMemo(() => {
+    const buckets = new Map<InstanceCategory, InstanceSummary[]>();
+    for (const instance of visible) {
+      const bucket = buckets.get(instance.category) ?? [];
+      bucket.push(instance);
+      buckets.set(instance.category, bucket);
+    }
+    return [...buckets.entries()].sort(
+      (left, right) =>
+        CATEGORY_ORDER.indexOf(left[0]) - CATEGORY_ORDER.indexOf(right[0]),
+    );
+  }, [visible]);
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  /**
+   * 删实例记录。只删 Aether 的记录，`.minecraft` 里的游戏文件不动，所以提示里
+   * 要写清楚这一点，免得用户以为会卸载游戏。
+   */
+  const handleDelete = useCallback(
+    async (instance: InstanceSummary) => {
+      setActionError(null);
+      setNotice(null);
+      setDeletingId(instance.id);
+      try {
+        await deleteInstance(instance.id);
+        setNotice(
+          `已删除实例「${instance.name}」。游戏文件仍在原 .minecraft 里，没有删除。`,
+        );
+        await reload();
+      } catch (caught) {
+        setActionError(
+          caught instanceof Error ? caught.message : "删除失败",
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [reload],
   );
 
   const handleCreated = useCallback(
@@ -120,6 +192,17 @@ export function InstancesPage({ page }: InstancesPageProps) {
 
       {!desktop ? (
         <DesktopOnlyNotice body="浏览器预览读不到本机实例。用桌面版可以扫描、创建和启动实例。" />
+      ) : null}
+
+      {notice ? (
+        <MessageBar intent="success">
+          <MessageBarBody>{notice}</MessageBarBody>
+        </MessageBar>
+      ) : null}
+      {actionError ? (
+        <MessageBar intent="error">
+          <MessageBarBody>{actionError}</MessageBarBody>
+        </MessageBar>
       ) : null}
 
       <section className="status-panel list-panel" aria-labelledby="instances-heading">
@@ -193,11 +276,32 @@ export function InstancesPage({ page }: InstancesPageProps) {
             body={`没有名称或版本包含「${query.trim()}」的实例，换个关键词试试。`}
           />
         ) : (
-          <InstanceList
-            instances={visible}
-            memoryMiB={memoryMiB}
-            javaLabel={javaKey === null ? null : formatJavaLabel(javaKey)}
-          />
+          <div className="instance-groups">
+            {groups.map(([category, members]) => (
+              <section className="instance-group" key={category}>
+                <div className="instance-group-heading">
+                  <Text weight="semibold">{CATEGORY_LABEL[category]}</Text>
+                  <Badge appearance="tint">{members.length}</Badge>
+                </div>
+                <InstanceList
+                  instances={members}
+                  memoryMiB={memoryMiB}
+                  javaLabel={javaKey === null ? null : formatJavaLabel(javaKey)}
+                  onDelete={(instance) => {
+                    // 说清楚删的是什么，再问一次。删的是实例记录，不碰游戏文件。
+                    const confirmed = window.confirm(
+                      `删除实例「${instance.name}」？\n\n` +
+                        "只删除 Aether 的实例记录。.minecraft 里的版本、存档、模组、投影都不会动。",
+                    );
+                    if (confirmed) {
+                      void handleDelete(instance);
+                    }
+                  }}
+                  deletingId={deletingId}
+                />
+              </section>
+            ))}
+          </div>
         )}
         {/*
           启动面板：列表行本身很紧凑，`InstanceList` 也不承载额外内容，

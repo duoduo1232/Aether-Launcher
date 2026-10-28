@@ -95,6 +95,8 @@ describe("summariseImport", () => {
     name: "1.20.1",
     version: "1.20.1",
     state: "incomplete" as const,
+    category: "vanilla" as const,
+    gameDirectory: null,
   };
 
   it("reports a clean import", () => {
