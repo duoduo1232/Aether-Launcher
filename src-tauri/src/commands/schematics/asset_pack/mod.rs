@@ -35,6 +35,7 @@ mod pack;
 pub use cache::{VersionJar, cache_key, list_version_jars, load_cached, store_cached};
 pub use model::VariantBinding;
 pub use pack::build_atlas;
+
 /// 一个 jar 里允许读取的最大条目数，防止异常压缩包拖住解析。
 const MAX_ENTRIES: usize = 40_000;
 
@@ -123,12 +124,14 @@ pub fn build_asset_pack(jar: &Path, version_label: &str) -> Result<AssetPack, Pa
         return Err(PackError::NotAResourcePack);
     }
 
-    // 只保留投影里真的会出现、且能解析出模型的方块。
-    let blocks = model::bake_all(&raw);
+    let mut blocks = model::bake_all(&raw);
 
     // 图集只需要被模型引用到的贴图。
     let referenced = model::referenced_textures(&blocks);
     let (atlas_png, atlas, atlas_size) = build_atlas(&raw.textures, &referenced);
+
+    // 烘焙阶段只知道贴图在图里的局部 UV；建好图集后补上格子偏移。
+    model::apply_atlas_slots(&mut blocks, &atlas);
 
     Ok(AssetPack {
         source_version: version_label.to_owned(),
@@ -248,6 +251,57 @@ mod tests {
         assert!(!stone[0].model.quads.is_empty());
         assert!(!stone[0].model.texture_ids.is_empty());
     }
+
+    /// 每个四边形的 UV 都必须落在它那张贴图的图集格子里。
+    ///
+    /// 这条盯的是「UV 只算到 0..1、没乘图集格子」的 bug —— 那时的表现是整个
+    /// 画面采样到同一张乱码图。
+    #[test]
+    fn quads_sample_their_own_atlas_cell() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
+
+        let mut checked = 0;
+        for bindings in pack.blocks.values() {
+            for binding in bindings {
+                for quad in &binding.model.quads {
+                    let Some((texture, _)) = &quad.uv else {
+                        continue;
+                    };
+                    let Some(slot) = pack.atlas.get(texture) else {
+                        continue;
+                    };
+                    for uv in &quad.uvs {
+                        assert!(
+                            uv[0] >= slot.u0 - 0.001
+                                && uv[0] <= slot.u1 + 0.001
+                                && uv[1] >= slot.v0 - 0.001
+                                && uv[1] <= slot.v1 + 0.001,
+                            "{texture}: uv {uv:?} outside slot {slot:?}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no textured quads to check");
+    }
+
+    /// 图集格子不能越界，也不能空。
+    #[test]
+    fn atlas_slots_stay_inside_the_atlas() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
+        for (id, slot) in &pack.atlas {
+            assert!(slot.u0 >= 0.0 && slot.v0 >= 0.0, "{id} starts outside");
+            assert!(slot.u1 <= 1.0 && slot.v1 <= 1.0, "{id} ends outside");
+            assert!(slot.u0 < slot.u1 && slot.v0 < slot.v1, "{id} is empty");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,7 +327,23 @@ mod probe {
             quads,
             pack.atlas_png.len()
         );
-        // 抽查几个真实方块：坐标必须在 0..1 内、UV 必须在 0..1 内。
+
+        // 索引色贴图必须真的被解码。如果解码器吐洋红占位，图集里会有大量
+        // 纯洋红像素 —— 那正是「一片乱码」的画面来源。
+        if let Some(rgba) = super::pack::decode_for_test(&pack.atlas_png) {
+            let total = rgba.len() / 4;
+            let magenta = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] > 240 && pixel[1] < 20 && pixel[2] > 240)
+                .count();
+            println!("atlas magenta pixels: {magenta} / {total}");
+            assert!(
+                magenta * 100 < total,
+                "atlas is mostly magenta ({magenta}/{total}): indexed textures are not decoded"
+            );
+        }
         for name in [
             "minecraft:stone",
             "minecraft:cherry_planks",

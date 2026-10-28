@@ -80,26 +80,33 @@ struct Pixels {
 }
 
 /// 解码 PNG 并缩放到固定格子。
+///
+/// 交给解码器做颜色转换，不自己按 `ColorType` 逐像素取字节 —— 原版贴图里有大量
+/// **索引色** PNG，手写分支拿不到调色板，只能吐占位色，画面上就是一片洋红。
 fn decode_png(bytes: &[u8]) -> Option<Pixels> {
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    // 索引色展开成 RGB(A)、低位深补齐到 8 位。
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let buffer_size = reader.output_buffer_size()?;
     let mut buffer = vec![0u8; buffer_size];
     let frame = reader.next_frame(&mut buffer).ok()?;
     let width = frame.width;
     let height = frame.height;
-    let color_type = frame.color_type;
+    if width == 0 || height == 0 {
+        return None;
+    }
     let data = &buffer[..frame.buffer_size()];
 
     let mut out = vec![0u8; (CELL * CELL * 4) as usize];
     for y in 0..CELL {
         for x in 0..CELL {
             // 最近邻采样：源图坐标按比例映射。
-            let sx = (u64::from(x) * u64::from(width) / u64::from(CELL)) as u32;
-            let sy = (u64::from(y) * u64::from(height) / u64::from(CELL)) as u32;
-            let sx = sx.min(width.saturating_sub(1));
-            let sy = sy.min(height.saturating_sub(1));
-            let (r, g, b, a) = sample(data, width, sx, sy, color_type);
+            let sx = ((u64::from(x) * u64::from(width)) / u64::from(CELL)) as u32;
+            let sy = ((u64::from(y) * u64::from(height)) / u64::from(CELL)) as u32;
+            let sx = sx.min(width - 1);
+            let sy = sy.min(height - 1);
+            let (r, g, b, a) = sample(data, width, sx, sy, frame.color_type);
             let index = ((y * CELL + x) * 4) as usize;
             out[index] = r;
             out[index + 1] = g;
@@ -111,6 +118,8 @@ fn decode_png(bytes: &[u8]) -> Option<Pixels> {
 }
 
 /// 按颜色类型取一个像素并统一成 RGBA。
+///
+/// 索引色已经由 `normalize_to_color8` 展开，正常不会走到 `Indexed` 分支。
 fn sample(data: &[u8], width: u32, x: u32, y: u32, color: png::ColorType) -> (u8, u8, u8, u8) {
     let channels = match color {
         png::ColorType::Grayscale => 1,
@@ -142,7 +151,7 @@ fn sample(data: &[u8], width: u32, x: u32, y: u32, color: png::ColorType) -> (u8
             data.get(index + 2).copied().unwrap_or(0),
             data.get(index + 3).copied().unwrap_or(255),
         ),
-        // 索引色已经被解码器展开成 RGB(A)，不会走到这里。
+        // 展开前的兜底：明显的洋红，方便发现「转换没生效」。
         png::ColorType::Indexed => (255, 0, 255, 255),
     }
 }
@@ -174,4 +183,10 @@ fn encode_png(rgba: &[u8], side: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+/// 测试用：解码一张 PNG，拿到 RGBA 像素。
+#[cfg(test)]
+pub(super) fn decode_for_test(bytes: &[u8]) -> Option<Vec<u8>> {
+    decode_png(bytes).map(|pixels| pixels.data)
 }

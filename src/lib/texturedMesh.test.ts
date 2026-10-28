@@ -36,6 +36,7 @@ function fullCubeQuad(face: string): AssetQuad {
     normal: [0, 0, -1],
     cullface: face,
     layer: "opaque",
+    uv: ["minecraft:block/test", "minecraft:block/test"],
   };
 }
 

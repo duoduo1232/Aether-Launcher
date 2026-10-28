@@ -23,6 +23,7 @@ import type {
   SchematicDetail,
   SchematicOrigin,
 } from "./ipc";
+import { loadMaterialPreference, loadPreferredPack } from "./lib/schematicMaterial";
 import { AccountsPage } from "./pages/AccountsPage";
 import { HomePage } from "./pages/HomePage";
 import { InstancesPage } from "./pages/InstancesPage";
@@ -63,8 +64,22 @@ function SchematicPreviewWindow({
     [instanceId, relativePath, origin, originVersion],
   );
   const { status, data, error, reload } = useQuery<SchematicDetail>(load, true);
-  // 资源包只在用户点了「提取材质」之后才有值；没提取之前预览是纯色方块。
+  // 材质来源存进设置后，进预览就直接套用，不再每次问。
+  // 已设置但加载失败（版本被删了）时退回纯色，不阻塞预览。
   const [pack, setPack] = useState<AssetPack | null>(null);
+  const [preference, setPreference] = useState<string>(loadMaterialPreference);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPreferredPack(preference).then((loaded) => {
+      if (!cancelled) {
+        setPack(loaded);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [preference]);
 
   return (
     <div className="preview-window">
@@ -76,7 +91,11 @@ function SchematicPreviewWindow({
           拖动旋转 · 滚轮缩放 · 右键平移
         </Text>
       </div>
-      <AssetPackPicker pack={pack} onLoaded={setPack} />
+      <AssetPackPicker
+        pack={pack}
+        onLoaded={setPack}
+        onPreferenceChange={setPreference}
+      />
       {status === "loading" ? (
         <ListSkeleton />
       ) : status === "error" ? (

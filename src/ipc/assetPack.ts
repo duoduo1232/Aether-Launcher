@@ -36,11 +36,17 @@ export type AssetPackCandidate = {
 export type AssetQuad = {
   /** 归一化到 0..1 方块空间的四个顶点。 */
   positions: [number, number, number][];
+  /** 已经映射到图集格子的 UV（0..1），渲染时直接用。 */
   uvs: [number, number][];
   normal: [number, number, number];
   /** 邻居占住这个方向时可以整面跳过；`null` 表示始终绘制。 */
   cullface: string | null;
   layer: "opaque" | "cutout" | "translucent";
+  /**
+   * `[贴图 id, 图集键]`。后端用它把 UV 落到正确格子；前端渲染不需要它，
+   * 但保留以便排查「贴上错图」这类问题。
+   */
+  uv: [string, string] | null;
 };
 
 /** 一个方块状态绑定。 */

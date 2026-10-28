@@ -56,11 +56,16 @@ pub fn list_version_jars(game_directory: &Path) -> Vec<VersionJar> {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        // 版本 jar 与版本目录同名。
-        let Ok(jar_entry) = fs::read_dir(entry.path()) else {
-            continue;
-        };
-        for file in jar_entry.flatten() {
+        // 优先取与版本目录同名的 jar（`<版本>/<版本>.jar`）—— 这才是客户端。
+        // 版本目录里还可能有 loader 的 jar（Fabric/Forge 装完后常见），它们的
+        // 大小也不小，随便取第一个可能拿到的是 loader，解出来没有方块模型。
+        let expected = format!("{name}.jar");
+        let files: Vec<_> = fs::read_dir(entry.path())
+            .map(|dir| dir.flatten().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut picked: Option<(PathBuf, u64)> = None;
+        for file in files {
             let file_name = file.file_name();
             let Some(file_name) = file_name.to_str() else {
                 continue;
@@ -78,12 +83,25 @@ pub fn list_version_jars(game_directory: &Path) -> Vec<VersionJar> {
             if metadata.len() < MIN_LIBRARY_JAR_BYTES {
                 continue;
             }
+            let exact = file_name == expected;
+            let better = match &picked {
+                Some(_) => exact,
+                None => true,
+            };
+            if better {
+                picked = Some((file.path(), metadata.len()));
+            }
+            if exact {
+                break;
+            }
+        }
+
+        if let Some((jar, size_bytes)) = picked {
             out.push(VersionJar {
                 version: name.clone(),
-                jar: file.path(),
-                size_bytes: metadata.len(),
+                jar,
+                size_bytes,
             });
-            break;
         }
     }
     out.sort_by(|left, right| left.version.cmp(&right.version));

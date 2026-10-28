@@ -49,18 +49,21 @@ pub enum RenderLayer {
 }
 
 /// 一个面。坐标已归一化到 0..1 的方块空间。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Quad {
     /// 四个顶点，逆时针（从外面看）。
     pub positions: [[f32; 3]; 4],
-    /// 四个顶点在图集里的 UV（0..1）。
+    /// 四个顶点在这张贴图**自身**里的 UV（0..1）。图集偏移由
+    /// [`apply_atlas_slots`] 补上。
     pub uvs: [[f32; 2]; 4],
     /// 法线，用于面剔除与光照。
     pub normal: [f32; 3],
     /// 该面声明的 `cullface`：邻居占住这个方向时可以整面跳过。
     pub cullface: Option<Face>,
     pub layer: RenderLayer,
+    /// 这个面用哪张贴图（`minecraft:block/oak_planks`），同时也是图集的键。
+    pub uv: Option<(String, String)>,
 }
 
 /// 一个模型烘焙后的几何。
@@ -101,6 +104,13 @@ struct RawElement {
     faces: Vec<(Face, RawFace)>,
 }
 
+impl RawElement {
+    /// 这个盒子是不是正好填满整个方块（`from = 0,0,0` 且 `to = 16,16,16`）。
+    fn is_full_cube(&self) -> bool {
+        self.from == [0.0; 3] && self.to == [16.0; 3]
+    }
+}
+
 /// 一个模型解析完（已合并父链）的样子。
 #[derive(Debug, Clone, Default)]
 struct ResolvedModel {
@@ -117,7 +127,8 @@ pub fn bake_all(raw: &RawPack) -> HashMap<String, Vec<VariantBinding>> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
             continue;
         };
-        let bindings = bake_block(&value, raw, &mut cache);
+        let layer = layer_for(block_id);
+        let bindings = bake_block(&value, raw, &mut cache, layer);
         if !bindings.is_empty() {
             blocks.insert(block_id.clone(), bindings);
         }
@@ -137,18 +148,71 @@ pub fn referenced_textures(blocks: &HashMap<String, Vec<VariantBinding>>) -> Has
     used
 }
 
+/// 一个方块应该用哪个渲染层。
+///
+/// jar 的模型 JSON 里没有可靠的渲染层信息（原版由硬编码的 block 类决定），
+/// 所以按方块名判断：玻璃、冰、粘液块这类要混合；树叶、花草、铁栏杆这类只
+/// 需要二值透明。认不出来的按不透明处理，代价是玻璃背后会挡一层。
+fn layer_for(block_id: &str) -> RenderLayer {
+    let name = block_id.strip_prefix("minecraft:").unwrap_or(block_id);
+
+    // 半透明：真的要看穿过去。
+    const TRANSLUCENT: [&str; 8] = [
+        "glass",
+        "glass_pane",
+        "tinted_glass",
+        "ice",
+        "frosted_ice",
+        "slime_block",
+        "honey_block",
+        "water",
+    ];
+    if TRANSLUCENT.contains(&name) || name.starts_with("stained_glass") {
+        return RenderLayer::Translucent;
+    }
+
+    // 二值透明：alpha 低于阈值直接丢弃。
+    const CUTOUT: [&str; 12] = [
+        "leaves",
+        "vine",
+        "ladder",
+        "torch",
+        "wall_torch",
+        "soul_torch",
+        "soul_wall_torch",
+        "iron_bars",
+        "chain",
+        "cobweb",
+        "scaffolding",
+        "flower_pot",
+    ];
+    if CUTOUT.contains(&name)
+        || name.ends_with("_leaves")
+        || name.ends_with("_door")
+        || name.ends_with("_trapdoor")
+        || name.ends_with("_sapling")
+        || name.ends_with("_pane")
+        || name.ends_with("_carpet")
+    {
+        return RenderLayer::Cutout;
+    }
+
+    RenderLayer::Opaque
+}
+
 /// 把一个 blockstate JSON 烘焙成若干绑定。
 fn bake_block(
     value: &serde_json::Value,
     raw: &RawPack,
     cache: &mut HashMap<String, ResolvedModel>,
+    layer: RenderLayer,
 ) -> Vec<VariantBinding> {
     let mut out = Vec::new();
 
     if let Some(variants) = value.get("variants").and_then(|v| v.as_object()) {
         for (key, entry) in variants {
             let when = parse_when(key);
-            if let Some(binding) = bake_entry(first_of(entry), when, raw, cache) {
+            if let Some(binding) = bake_entry(first_of(entry), when, raw, cache, layer) {
                 out.push(binding);
             }
         }
@@ -160,7 +224,7 @@ fn bake_block(
         // 会多画几个部件，但不至于整个方块消失。
         for part in parts {
             let entry = part.get("apply").unwrap_or(part);
-            if let Some(binding) = bake_entry(first_of(entry), Vec::new(), raw, cache) {
+            if let Some(binding) = bake_entry(first_of(entry), Vec::new(), raw, cache, layer) {
                 out.push(binding);
             }
         }
@@ -175,6 +239,7 @@ fn bake_entry(
     when: Vec<(String, String)>,
     raw: &RawPack,
     cache: &mut HashMap<String, ResolvedModel>,
+    layer: RenderLayer,
 ) -> Option<VariantBinding> {
     let model_id = qualify(entry.get("model")?.as_str()?);
     let resolved = resolve_model(&model_id, raw, cache, 0)?;
@@ -197,7 +262,9 @@ fn bake_entry(
                 continue;
             };
             texture_ids.insert(texture.clone());
-            quads.push(build_quad(element, *face, raw_face, &uuids_placeholder()));
+            let mut quad = build_quad(element, *face, raw_face, layer);
+            quad.uv = Some((texture.clone(), texture));
+            quads.push(quad);
         }
     }
 
@@ -210,7 +277,7 @@ fn bake_entry(
             .next()?;
         let fallback_face = RawFace {
             uv: [0.0, 0.0, 16.0, 16.0],
-            texture: texture.clone(),
+            texture: "#all".to_owned(),
             cullface: None,
         };
         let cube = RawElement {
@@ -221,13 +288,12 @@ fn bake_entry(
                 .map(|face| (*face, fallback_face.clone()))
                 .collect(),
         };
+        let mut textures = resolved.textures.clone();
+        textures.insert("all".to_owned(), texture.clone());
         for face in ALL_FACES {
-            quads.push(build_quad(
-                &cube,
-                face,
-                &fallback_face,
-                &uuids_placeholder(),
-            ));
+            let mut quad = build_quad(&cube, face, &fallback_face, layer);
+            quad.uv = Some((texture.clone(), texture.clone()));
+            quads.push(quad);
         }
         texture_ids.insert(texture);
     }
@@ -239,15 +305,9 @@ fn bake_entry(
         model: BakedModel {
             quads,
             texture_ids: texture_ids.into_iter().collect(),
-            full_cube: false,
+            full_cube: resolved.elements.len() == 1 && resolved.elements[0].is_full_cube(),
         },
     })
-}
-
-/// UV 占位：烘焙阶段还不知道图集位置，先留 0，图集建好后再填。
-/// 见 [`apply_atlas`]。
-fn uuids_placeholder() -> [f32; 4] {
-    [0.0, 0.0, 1.0, 1.0]
 }
 
 /// 解析模型及其父链，子覆盖父。
@@ -336,8 +396,11 @@ fn parse_element(value: &serde_json::Value) -> Option<RawElement> {
     Some(RawElement { from, to, faces })
 }
 
-/// 把一个面变成四边形，UV 已换算到该贴图在图集里的位置。
-fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, _uv_scale: &[f32; 4]) -> Quad {
+/// 把一个面变成四边形。
+///
+/// UV 先按「贴图自身」归一化（`uv` 里是 0..16 的像素坐标），图集偏移之后由
+/// [`apply_atlas_slots`] 统一补上。这样同一个模型换个图集位置不用重新烘焙。
+fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, layer: RenderLayer) -> Quad {
     let from = element.from.map(|value| value / 16.0);
     let to = element.to.map(|value| value / 16.0);
 
@@ -354,7 +417,37 @@ fn build_quad(element: &RawElement, face: Face, raw_face: &RawFace, _uv_scale: &
         uvs,
         normal: face_normal(face),
         cullface: raw_face.cullface,
-        layer: RenderLayer::Opaque,
+        layer,
+        uv: None,
+    }
+}
+
+/// 把烘焙阶段的 0..1 局部 UV 映射到图集里的实际格子。
+///
+/// 烘焙时只知道「这张贴图在这个面里占 0..1 的哪一段」，不知道它在图集第几格；
+/// 图集建好后由这里补上偏移与缩放。**不做这一步，每个面都会采样整张图集**，
+/// 画面上就是一片乱码。
+pub(super) fn apply_atlas_slots(
+    blocks: &mut HashMap<String, Vec<VariantBinding>>,
+    atlas: &HashMap<String, super::AtlasSlot>,
+) {
+    for bindings in blocks.values_mut() {
+        for binding in bindings.iter_mut() {
+            for quad in &mut binding.model.quads {
+                let Some((texture, _)) = &quad.uv else {
+                    continue;
+                };
+                let Some(slot) = atlas.get(texture) else {
+                    continue;
+                };
+                let (u0, v0) = (slot.u0, slot.v0);
+                let (du, dv) = (slot.u1 - slot.u0, slot.v1 - slot.v0);
+                for uv in &mut quad.uvs {
+                    uv[0] = u0 + uv[0] * du;
+                    uv[1] = v0 + uv[1] * dv;
+                }
+            }
+        }
     }
 }
 

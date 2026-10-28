@@ -2,27 +2,38 @@ import { Button, Dropdown, Option, Spinner, Text } from "@fluentui/react-compone
 import { useCallback, useEffect, useState } from "react";
 import type { AssetPack, AssetPackCandidate } from "../ipc";
 import { listAssetPackCandidates, loadAssetPack } from "../ipc";
+import {
+  loadMaterialPreference,
+  saveMaterialPreference,
+} from "../lib/schematicMaterial";
 
 /**
- * 「用真实材质显示」的提示条。
+ * 材质来源选择。
  *
- * 为什么不让后端自己解：一个客户端 jar 有二十多 MB，里面上千个 model 和贴图。
- * 打开投影页就自动解压会让每次进页面都等好几秒，所以改成用户明确点一下才做，
- * 提取结果按 jar（路径 + 大小 + 修改时间）缓存，第二次进页面是即时的。
+ * 两种形态：
+ * - **已经设置过**：什么都不显示。资源包由上层按保存的版本自动加载，用户
+ *   进预览直接看到真实材质。
+ * - **还没设置**：一条提示 + 版本下拉框 + 「使用材质」。选完立刻保存，之后
+ *   不再问 —— 提取结果有后端缓存（按 jar 的路径 + 大小 + 修改时间），再次
+ *   打开只是读缓存。
  *
- * 提取完成后把资源包交给上层，预览从纯色方块换成带 UV 的真实模型。
+ * 想换版本或改回纯色，去「设置 → 投影图材质」。
  */
 export function AssetPackPicker({
   pack,
   onLoaded,
+  onPreferenceChange,
 }: {
   pack: AssetPack | null;
   onLoaded: (pack: AssetPack) => void;
+  /** 保存选择；传空串表示「纯色预览」。 */
+  onPreferenceChange: (version: string) => void;
 }) {
   const [candidates, setCandidates] = useState<AssetPackCandidate[] | null>(null);
   const [selected, setSelected] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string>(loadMaterialPreference);
 
   const refresh = useCallback(() => {
     let cancelled = false;
@@ -48,23 +59,41 @@ export function AssetPackPicker({
 
   useEffect(() => refresh(), [refresh]);
 
-  const extract = useCallback(async () => {
-    if (!selected) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      onLoaded(await loadAssetPack(selected));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  }, [onLoaded, selected]);
+  const apply = useCallback(
+    async (version: string) => {
+      if (!version) {
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const pack = await loadAssetPack(version);
+        saveMaterialPreference(version);
+        setSaved(version);
+        onPreferenceChange(version);
+        onLoaded(pack);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [onLoaded, onPreferenceChange],
+  );
 
-  if (pack) {
+  // 已经设置过（且有资源包）：不再打扰。
+  if (saved && pack) {
     return null;
+  }
+
+  // 设置过但加载失败或正在加载：给一行状态，不再弹选择框。
+  if (saved && !pack) {
+    return (
+      <div className="asset-pack-bar">
+        <Spinner size="tiny" />
+        <Text size={200}>正在套用材质（MC {saved}）…</Text>
+      </div>
+    );
   }
 
   if (candidates === null) {
@@ -90,7 +119,7 @@ export function AssetPackPicker({
     return (
       <div className="asset-pack-bar" role="alert">
         <Text size={200}>提取失败：{error}</Text>
-        <Button size="small" onClick={() => void extract()} disabled={busy}>
+        <Button size="small" onClick={() => void apply(selected)} disabled={busy}>
           重试
         </Button>
       </div>
@@ -99,7 +128,9 @@ export function AssetPackPicker({
 
   return (
     <div className="asset-pack-bar">
-      <Text size={200}>当前是纯色预览。</Text>
+      <Text size={200}>
+        当前是纯色预览。选一个版本提取真实材质，选完会记住。
+      </Text>
       <Dropdown
         size="small"
         aria-label="选择用来提取材质的版本"
@@ -120,10 +151,10 @@ export function AssetPackPicker({
       <Button
         size="small"
         appearance="primary"
-        onClick={() => void extract()}
+        onClick={() => void apply(selected)}
         disabled={busy || !selected}
       >
-        {busy ? "提取中…" : "提取材质"}
+        {busy ? "提取中…" : "使用材质"}
       </Button>
     </div>
   );
