@@ -331,7 +331,12 @@ pub(super) fn missing_game_directory(instance: &GameInstance) -> bool {
 fn scan_sources(instance: &GameInstance) -> Vec<ScanSource> {
     let game_root = resolve_game_directory(instance);
     let versions = version_directories(&game_root);
-    game_sources(&instance.root, &game_root, &versions)
+    game_sources(
+        &instance.root,
+        &game_root,
+        instance.version.as_str(),
+        &versions,
+    )
 }
 
 /// `versions/` 下的全部版本目录名，排序后返回。
@@ -355,9 +360,26 @@ fn version_directories(game_root: &Path) -> Vec<String> {
 
 /// 用**已枚举好**的版本目录名拼出一个实例的扫描来源。
 ///
-/// 只判断 `schematics/` 是否存在，不枚举 `versions/`，所以同一份
-/// `versions` 可以被上百个实例复用。
-fn game_sources(instance_root: &Path, game_root: &Path, versions: &[String]) -> Vec<ScanSource> {
+/// 一个实例的投影来源有三处，缺一处都会出现「文件管理器里有、界面是空的」：
+///
+/// 1. 实例自己的 `<实例目录>/schematics`；
+/// 2. 游戏目录根上的 `<游戏目录>/schematics`——不启用版本隔离的启动器
+///    （PCL2 默认、HMCL 默认）把投影放这里，所有版本共用；
+/// 3. **这个实例自己那个版本**的 `<游戏目录>/versions/<版本>/schematics`。
+///
+/// 第 3 条**只认实例记录的 `version`**，不能把 `versions/` 下所有版本的
+/// `schematics` 都算进来：那样每个版本都会显示整个 `.minecraft` 里的全部投影
+/// （本机 134 个实例全部显示 1649 个，用户看到的就是「每个版本都有 1000 多个」）。
+/// 投影跟着版本走，`versions/生电/schematics` 只属于生电那个版本。
+///
+/// `versions` 是已枚举好的版本目录名，用于判断这个实例的版本目录是否存在，
+/// 不需要再逐个 `is_dir`。
+fn game_sources(
+    instance_root: &Path,
+    game_root: &Path,
+    version: &str,
+    versions: &[String],
+) -> Vec<ScanSource> {
     let mut sources = vec![ScanSource {
         directory: instance_root.join("schematics"),
         origin: ORIGIN_INSTANCE,
@@ -374,21 +396,16 @@ fn game_sources(instance_root: &Path, game_root: &Path, versions: &[String]) -> 
         });
     }
 
-    // `versions/<版本>/schematics`：版本隔离的启动器把每个版本的投影放在这里。
-    // 只读目录名，不递归进 `versions` 内部，避免把库目录当投影扫。
-    for name in versions {
-        let directory = game_root.join("versions").join(name).join("schematics");
-        if !directory.is_dir() {
-            continue;
+    // 只加这个实例自己的版本目录；版本名必须真的在 `versions/` 下存在。
+    if versions.iter().any(|name| name == version) {
+        let directory = game_root.join("versions").join(version).join("schematics");
+        if directory.is_dir() && !sources.iter().any(|source| source.directory == directory) {
+            sources.push(ScanSource {
+                directory,
+                origin: ORIGIN_VERSION,
+                origin_version: version.to_owned(),
+            });
         }
-        if sources.iter().any(|source| source.directory == directory) {
-            continue;
-        }
-        sources.push(ScanSource {
-            directory,
-            origin: ORIGIN_VERSION,
-            origin_version: name.clone(),
-        });
     }
 
     sources
@@ -702,7 +719,12 @@ pub(crate) async fn list_schematics(app: tauri::AppHandle) -> Result<SchematicLi
             let versions = version_cache
                 .entry(game_root.clone())
                 .or_insert_with(|| version_directories(&game_root));
-            let sources = game_sources(&instance.root, &game_root, versions);
+            let sources = game_sources(
+                &instance.root,
+                &game_root,
+                instance.version.as_str(),
+                versions,
+            );
 
             let mut result = ScanResult::default();
             for source in &sources {

@@ -202,7 +202,12 @@ Prism / MultiMC 的 `InstanceDir=` 默认是 `instances`，配置里可以改成
 
 - **`.litematic` 的真实布局**：根上是 `Version`、`SubVersion`、`MinecraftDataVersion`、`Metadata` 复合和 `Regions` 复合。名称、作者、`RegionCount`、`TotalBlocks`、`TotalVolume`、`EnclosingSize` 都在 `Metadata` 里，计数是 `TAG_Int`（也接受 `TAG_Long`）。每个区域的调色板是 `BlockStatePalette`——一个方块状态列表，索引就是列表下标；预览只取其中的 `Name`，`Properties` 不参与上色。
 - **保留文件夹结构**：扫描是递归的（深度上限 8、条目上限 4096、跳过符号链接），每个文件用 `relativePath`（`/` 分隔，如 `城堡/主楼.litematic`）标识。前端 `src/lib/schematicTree.ts` 据此还原目录树，文件夹可折叠。
-- **三处来源都要扫**：Litematica 找投影看的是 `schematics/`，而游戏目录可能有三份 `schematics/` —— 游戏目录根上的、`versions/<版本>/schematics`（版本隔离）、以及实例私有目录。只扫其中一处就会出现「文件管理器里明明有一堆，界面是空的」。`scan_sources` 把三处都列出来，每份文件带 `origin`（`instance` / `game` / `version`）和 `originVersion`；同一相对路径出现在两个来源时是两份不同的文件，前端按来源分区渲染，不做合并。
+- **三处来源，但版本目录只认自己那个**：一个实例能看到 ——
+  - 实例私有的 `<实例目录>/schematics`；
+  - 游戏目录根上的 `<游戏目录>/schematics`（不启用版本隔离的启动器放这里，所有版本共用）；
+  - **自己那个版本**的 `<游戏目录>/versions/<版本>/schematics`。
+
+  第三条只认实例记录里的 `version`，**不能把 `versions/` 下所有版本的 `schematics` 都算进来**：那样每个版本都会显示整个 `.minecraft` 的投影总和（本机 134 个实例全部显示 1649 个，界面上就是「每个版本都有 1000 多个」）。投影跟着版本走，`versions/生电-1.21.4/schematics` 只属于生电那个版本。实测 134 个实例里只有 7 个真有投影：生电 785、互通服务器 773、XPlus 75、1.10.2 74、服务器1 13、服务器2 2、彗星汉化 1。
 - **名字为空或 `Unnamed` 时回退到文件名**：很多投影的作者只填作者和方块数，`Metadata.Name` 留着 Litematica 的占位值 `Unnamed`。`display_name` 把空白和 `Unnamed`（大小写不敏感）都当成没填名字，用文件名去掉 `.litematic` 后显示。
 - **游戏目录只来自实例记录**：Aether 是独立启动器，不从 PCL2、HMCL 等别的启动器读配置，也不扫描磁盘猜路径。`GameInstance::game_directory` 是唯一来源，由后端在用户选目录时写入。老记录（这个字段加入之前创建的实例）没有它，因此扫不到任何东西；`list_schematics` 会报出 `missingGameDirectory` 数量，界面据此显示「设置游戏目录」入口，用户选一次后由 `apply_game_directory` 批量写回 —— 写前先把要改的 `instance.json` 备份到 `instances/.backup-<时间戳>/`，已经设置过的不动。
 - **路径校验**：IPC 只接受 `schematics/` 下的相对路径。`validate_relative_path` 要求 `/` 分隔、以 `.litematic` 结尾、每段不超过 255 字节、总长不超过 1024、层级不超过 8，并通过 `aether_download::is_safe_relative_path`（拒绝 `..`、盘符、保留名、结尾点）。目标文件夹用 `validate_folder_path`，空字符串表示根目录。

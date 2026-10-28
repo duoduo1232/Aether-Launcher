@@ -28,10 +28,15 @@ fn scan_instance(instance: &GameInstance) -> (Vec<SchematicSummary>, Vec<FailedS
 }
 
 fn instance_with_root(root: PathBuf) -> GameInstance {
+    instance_with_version(root, "1.21.1")
+}
+
+/// 指定版本号的实例；`versions/<version>/schematics` 只该由它看到。
+fn instance_with_version(root: PathBuf, version: &str) -> GameInstance {
     GameInstance {
         id: InstanceId::new(),
-        name: "测试实例".to_owned(),
-        version: VersionId::parse("1.21.1").expect("version"),
+        name: format!("测试实例 {version}"),
+        version: VersionId::parse(version).expect("version"),
         root,
         game_directory: None,
         state: InstanceState::Ready,
@@ -126,7 +131,9 @@ fn scans_the_game_directory_when_the_instance_directory_is_empty() {
 }
 
 #[test]
-fn scans_every_version_schematics_directory() {
+fn scans_the_instance_own_version_directory() {
+    // 投影跟着版本走：`versions/1.20.1/schematics` 只属于 1.20.1 的实例，
+    // 别的版本看不到（否则每个版本都会显示整个 `.minecraft` 的投影总和）。
     let root = temp_root("versions");
     let game = root.join("minecraft");
     write_litematic(
@@ -145,18 +152,15 @@ fn scans_every_version_schematics_directory() {
             .join("two.litematic"),
         "一点二一",
     );
-    // 没有 schematics 的版本目录不该造成任何影响。
-    fs::create_dir_all(game.join("versions").join("共用一个库")).expect("mkdir");
 
-    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
+    let mut instance = instance_with_version(root.clone(), "1.20.1");
+    instance.game_directory = Some(game.clone());
+    let (summaries, failed) = scan_instance(&instance);
 
-    assert_eq!(summaries.len(), 2, "failed={failed:?}");
-    assert!(summaries.iter().all(|item| item.origin == ORIGIN_VERSION));
-    let versions: Vec<&str> = summaries
-        .iter()
-        .map(|item| item.origin_version.as_str())
-        .collect();
-    assert_eq!(versions, vec!["1.20.1", "1.21.4"]);
+    assert_eq!(summaries.len(), 1, "failed={failed:?}");
+    assert_eq!(summaries[0].origin, ORIGIN_VERSION);
+    assert_eq!(summaries[0].origin_version, "1.20.1");
+    assert_eq!(summaries[0].file_name, "one.litematic");
 
     fs::remove_dir_all(root).expect("cleanup");
 }
@@ -175,7 +179,9 @@ fn keeps_the_same_relative_path_from_two_sources_apart() {
         "版本的",
     );
 
-    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
+    let mut instance = instance_with_version(root.clone(), "1.20.1");
+    instance.game_directory = Some(game.clone());
+    let (summaries, failed) = scan_instance(&instance);
 
     // 两个不同文件，同一条相对路径，两条都要留着。
     assert_eq!(summaries.len(), 2, "failed={failed:?}");
@@ -200,8 +206,9 @@ fn keeps_the_folder_structure_inside_a_version_directory() {
         "Unnamed",
     );
 
-    let (summaries, failed) = scan_instance(&instance_with_root(root.clone()));
-
+    let mut instance = instance_with_version(root.clone(), "生电-1.21.4");
+    instance.game_directory = Some(root.join("minecraft"));
+    let (summaries, failed) = scan_instance(&instance);
     assert_eq!(summaries.len(), 1, "failed={failed:?}");
     assert_eq!(summaries[0].relative_path, "建筑/空城计.litematic");
     // 名字是占位值时用文件名，文件名去掉扩展名。
@@ -223,14 +230,18 @@ fn display_name_falls_back_when_the_metadata_name_is_a_placeholder() {
 }
 
 #[test]
-fn instances_sharing_a_game_directory_only_see_their_own_sources() {
-    // 回归测试。上一版把「扫描结果」按游戏目录缓存，结果共用同一个
-    // `.minecraft` 的实例全部显示同一份上千个投影 —— 每个实例都长一样。
+fn a_version_only_sees_its_own_version_directory() {
+    // 回归测试，两次踩坑都钉在这里：
     //
-    // 缓存必须落在**来源目录**这一层：`versions/<a>/schematics` 该由 a 看到、
-    // `versions/<b>/schematics` 该由 b 看到，共享的只有游戏目录根上的
-    // `schematics/`。
-    let root = temp_root("shared-game");
+    // 1. 曾把「扫描结果」按游戏目录缓存，共用同一个 `.minecraft` 的实例全部
+    //    显示同一份上千个投影；
+    // 2. 曾把 `versions/` 下**所有**版本的 `schematics` 都算进每个实例，于是
+    //    每个版本都显示整个 `.minecraft` 的投影总和 —— 用户看到的
+    //    「每个版本都有 1000 多个」。
+    //
+    // 正确范围：实例私有目录 + 游戏目录根上的 `schematics/` + **自己那个版本**
+    // 的 `versions/<版本>/schematics`。
+    let root = temp_root("own-version");
     let game = root.join("game");
     fs::create_dir_all(game.join("versions").join("a").join("schematics")).expect("a");
     fs::create_dir_all(game.join("versions").join("b").join("schematics")).expect("b");
@@ -254,25 +265,32 @@ fn instances_sharing_a_game_directory_only_see_their_own_sources() {
         "乙的",
     );
 
-    let mut instance_a = instance_with_root(root.join("instance-a"));
+    let mut instance_a = instance_with_version(root.join("instance-a"), "a");
     instance_a.game_directory = Some(game.clone());
-    let mut instance_b = instance_with_root(root.join("instance-b"));
+    let mut instance_b = instance_with_version(root.join("instance-b"), "b");
     instance_b.game_directory = Some(game.clone());
 
-    let (a, _) = scan_instance(&instance_a);
-    let (b, _) = scan_instance(&instance_b);
     let names = |items: &[SchematicSummary]| {
         let mut names: Vec<String> = items.iter().map(|item| item.file_name.clone()).collect();
         names.sort();
         names
     };
 
-    // 同一个游戏目录，`versions/` 是全量的：两个实例都能看到根上的公共投影，
-    // 以及所有版本的 schematics。这正是 PCL2 之类版本的可见范围。
-    assert_eq!(names(&a), names(&b));
-    assert!(names(&a).contains(&"公共.litematic".to_owned()));
+    let (a, _) = scan_instance(&instance_a);
+    let (b, _) = scan_instance(&instance_b);
 
-    // 实例私有的 schematics 只属于自己，不能串到别的实例上。
+    // 公共的看得到，别人版本目录里的看不到。按码点排序，不做本地化折叠：
+    // 公（U+516C）在 甲（U+7532）前面，乙（U+4E59）在 公 前面。
+    assert_eq!(
+        names(&a),
+        vec!["公共.litematic".to_owned(), "甲的.litematic".to_owned()]
+    );
+    assert_eq!(
+        names(&b),
+        vec!["乙的.litematic".to_owned(), "公共.litematic".to_owned()]
+    );
+
+    // 实例私有的 schematics 只属于自己。
     write_litematic(
         &root
             .join("instance-a")
