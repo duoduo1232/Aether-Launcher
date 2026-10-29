@@ -103,6 +103,33 @@ fn int_field(compound: &Value, name: &'static str) -> Result<i32, SchematicError
         })
 }
 
+/// 把调色板条目拼回 Minecraft 的方块状态字符串。
+///
+/// Litematica 把状态存成 `{Name: "minecraft:oak_stairs", Properties: {facing:
+/// "north", shape: "straight"}}`，而前端和材质包按 `minecraft:oak_stairs[
+/// facing=north,shape=straight]` 这种写法匹配 blockstate 变体。属性名按字典序
+/// 排列，保证同一个状态总是拼成同一个字符串，变体缓存才不会漏。
+///
+/// 没有 `Properties` 的方块（石头、泥土）只返回 `Name`，与之前的输出一致。
+fn format_block_state(name: &str, properties: Option<&Value>) -> String {
+    let Some(properties) = properties.and_then(Value::as_compound) else {
+        return name.to_owned();
+    };
+    let mut pairs: Vec<(&str, &str)> = properties
+        .iter()
+        .filter_map(|(key, value)| Some((key.as_str(), value.as_str()?)))
+        .collect();
+    if pairs.is_empty() {
+        return name.to_owned();
+    }
+    pairs.sort_unstable_by_key(|(key, _)| *key);
+    let joined: Vec<String> = pairs
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    format!("{name}[{}]", joined.join(","))
+}
+
 /// 计数类字段：真实文件里 `TotalBlocks` / `TotalVolume` 是 `TAG_Int`，但语义是
 /// 方块计数，所以两种整型都接受，避免因为写入方的选择而拒绝整个文件。
 fn count_field(compound: &Value, name: &'static str) -> Result<i64, SchematicError> {
@@ -298,8 +325,9 @@ pub fn parse(bytes: &[u8]) -> Result<Schematic, SchematicError> {
                 return Err(SchematicError::TotalTooLarge(decoded_total));
             }
 
-            // `BlockStatePalette` 是方块状态列表，索引就是列表下标。这里只取
-            // `Name`：预览按方块 id 上色，`Properties`（朝向、半砖等）不影响颜色。
+            // `BlockStatePalette` 是方块状态列表，索引就是列表下标。除了 `Name`
+            // 还要保留 `Properties`：楼梯的 `facing`/`half`/`shape`、栅栏的连接
+            // 方向都写在这里，丢掉它们就只能把所有变体全画一遍。
             let palette_entries = region
                 .get("BlockStatePalette")
                 .ok_or(SchematicError::MissingField("BlockStatePalette"))?
@@ -310,11 +338,11 @@ pub fn parse(bytes: &[u8]) -> Result<Schematic, SchematicError> {
             }
             let mut palette = Vec::with_capacity(palette_entries.len());
             for entry in palette_entries {
-                let block = entry
+                let name = entry
                     .get("Name")
                     .and_then(Value::as_str)
                     .ok_or(SchematicError::WrongFieldType("BlockStatePalette"))?;
-                palette.push(block.to_owned());
+                palette.push(format_block_state(name, entry.get("Properties")));
             }
 
             let longs = region

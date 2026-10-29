@@ -7,7 +7,10 @@ import {
   FACES,
   faceIndex,
   faceOfNormal,
+  faceShade,
+  isOnBoundary,
   shouldFlipDiagonal,
+  srgbToLinear,
   voxelKey,
   type VoxelMap,
 } from "./voxelLight";
@@ -33,11 +36,11 @@ function world(...keys: Array<[number, number, number]>): VoxelMap {
 const nothing = (): boolean => false;
 
 describe("brightnessOfAo", () => {
-  it("就是 shulkr 的四个原值，不做色彩空间转换", () => {
+  it("是原版四格平均出来的四档", () => {
     expect(brightnessOfAo(0)).toBe(1);
-    expect(brightnessOfAo(1)).toBe(0.7);
-    expect(brightnessOfAo(2)).toBe(0.5);
-    expect(brightnessOfAo(3)).toBe(0.2);
+    expect(brightnessOfAo(1)).toBe(0.8);
+    expect(brightnessOfAo(2)).toBe(0.6);
+    expect(brightnessOfAo(3)).toBe(0.4);
   });
 
   it("单调递减，越暗的档位数值越小", () => {
@@ -49,7 +52,44 @@ describe("brightnessOfAo", () => {
 
   it("越界会被夹住", () => {
     expect(brightnessOfAo(-1)).toBe(1);
-    expect(brightnessOfAo(9)).toBe(0.2);
+    expect(brightnessOfAo(9)).toBe(0.4);
+  });
+});
+
+describe("faceShade", () => {
+  it("和原版主世界的朝向明暗一致", () => {
+    expect(faceShade("up")).toBe(1);
+    expect(faceShade("down")).toBe(0.5);
+    expect(faceShade("north")).toBe(0.8);
+    expect(faceShade("south")).toBe(0.8);
+    expect(faceShade("west")).toBe(0.6);
+    expect(faceShade("east")).toBe(0.6);
+  });
+
+  it("shade = false 的面不打暗", () => {
+    expect(faceShade("down", false)).toBe(1);
+  });
+});
+
+describe("srgbToLinear", () => {
+  it("端点不变，中间值按 sRGB 曲线解码", () => {
+    expect(srgbToLinear(0)).toBe(0);
+    expect(srgbToLinear(1)).toBeCloseTo(1, 6);
+    // 0.6 的暗角在线性空间里约是 0.318，three.js 编码回去才是 0.6。
+    expect(srgbToLinear(0.6)).toBeCloseTo(0.3185, 3);
+  });
+});
+
+describe("isOnBoundary", () => {
+  it("整格顶面在边界上，台阶顶面不在", () => {
+    const top = (y: number): Array<[number, number, number]> => [
+      [0, y, 1],
+      [1, y, 1],
+      [1, y, 0],
+      [0, y, 0],
+    ];
+    expect(isOnBoundary("up", top(1))).toBe(true);
+    expect(isOnBoundary("up", top(0.5))).toBe(false);
   });
 });
 
@@ -118,6 +158,18 @@ describe("ambientOcclusion", () => {
       expect(ambientOcclusion([0.5, 0.5, 0.5], face, 10, 10, 10, nothing)).toBe(0);
     }
   });
+
+  it("不在边界上的面在自己那一层采样：贴墙台阶顶面的靠墙边变暗", () => {
+    // 台阶在 (0,0,0)，东边 (1,0,0) 是一堵墙，上面一层全空。
+    const voxels = world([1, 0, 0]);
+    const corner: [number, number, number] = [1, 0.5, 1];
+    // 按外侧一格采样看的是 (1,1,0)，空的 → 不暗。
+    expect(ambientOcclusion(corner, "up", 0, 0, 0, solidAtOf(voxels))).toBe(0);
+    // 按自己这一层采样看的是 (1,0,0)，墙 → 暗一档。
+    expect(
+      ambientOcclusion(corner, "up", 0, 0, 0, solidAtOf(voxels), false),
+    ).toBe(1);
+  });
 });
 
 describe("aoShades", () => {
@@ -141,8 +193,8 @@ describe("aoShades", () => {
     ];
     const shades = aoShades("up", corners, 0, 0, 0, solidAtOf(voxels));
     const index = corners.findIndex((c) => c[0] === 1 && c[2] === 1);
-    // 3 档就是 shulkr 的 0.2。
-    expect(shades[index]).toBe(0.2);
+    // 两个侧邻都挡住是 3 档，原版的 0.4。
+    expect(shades[index]).toBe(0.4);
     expect(Math.max(...shades)).toBeGreaterThan(shades[index]);
   });
 });

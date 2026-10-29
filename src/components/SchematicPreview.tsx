@@ -39,8 +39,8 @@ type SchematicPreviewProps = {
  *   键位和碰撞都在 `walkControls` 里。
  *
  * 光照**不用 three.js 的光源**：方块明暗由 `voxelLight` 算好写进顶点色
- * （天空光 + 原版 shade 系数 + AO）。用 Lambert 光照的话整张图会随视角明暗
- * 变化，和 Minecraft 那种完全固定的方块明暗对不上。
+ * （原版的朝向明暗 × AO × 群系色，已换成线性值）。用 Lambert 光照的话整张图
+ * 会随视角明暗变化，和 Minecraft 那种完全固定的方块明暗对不上。
  */
 export function SchematicPreview({
   detail,

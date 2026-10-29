@@ -103,6 +103,7 @@ export type { MicrosoftLoginStatus } from "./accounts";
 export {
   IMPORT_LIMIT_BYTES,
   deleteSchematic,
+  revealSchematic,
   emptySchematicListing,
   importSchematic,
   importSchematicFolder,

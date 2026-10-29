@@ -1,14 +1,17 @@
 import {
+  Button,
   FluentProvider,
   Text,
   webDarkTheme,
   webLightTheme,
 } from "@fluentui/react-components";
+import { List24Regular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { AssetPackPicker } from "./components/AssetPackPicker";
 import { EmptyState } from "./components/EmptyState";
 import { ErrorState, ListSkeleton } from "./components/PageState";
+import { MaterialsDialog } from "./components/MaterialsDialog";
 import { SchematicPreview } from "./components/SchematicPreview";
 import { Sidebar } from "./components/Sidebar";
 import {
@@ -68,6 +71,8 @@ function SchematicPreviewWindow({
   // 已设置但加载失败（版本被删了）时退回纯色，不阻塞预览。
   const [pack, setPack] = useState<AssetPack | null>(null);
   const [preference, setPreference] = useState<string>(loadMaterialPreference);
+  const [missingBlocks, setMissingBlocks] = useState(0);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,9 +92,15 @@ function SchematicPreviewWindow({
         <Text as="h1" size={500} weight="semibold">
           {title || data?.metadata.name || "投影预览"}
         </Text>
-        <Text className="muted" size={200}>
-          拖动旋转 · 滚轮缩放 · 右键平移
-        </Text>
+        {data ? (
+          <Button
+            appearance="subtle"
+            icon={<List24Regular />}
+            onClick={() => setMaterialsOpen(true)}
+          >
+            材料清单
+          </Button>
+        ) : null}
       </div>
       <AssetPackPicker
         pack={pack}
@@ -106,12 +117,17 @@ function SchematicPreviewWindow({
         />
       ) : data ? (
         <>
-          <SchematicPreview detail={data} pack={pack} />
-          <Text className="muted preview-note">
-            此投影出自 MC {data.metadata.createdForRelease ?? "未知版本"}
-            （数据版本 {data.metadata.minecraftDataVersion}）
-            {pack ? ` · 材质来自 MC ${pack.sourceVersion}` : ""}
-          </Text>
+          <SchematicPreview detail={data} pack={pack} onMissingBlocks={setMissingBlocks} />
+          {missingBlocks > 0 ? (
+            <Text className="muted preview-note">
+              有 {missingBlocks} 个方块在当前材质里找不到贴图，换一个更接近投影版本的材质会好些。
+            </Text>
+          ) : null}
+          <MaterialsDialog
+            open={materialsOpen}
+            onOpenChange={setMaterialsOpen}
+            detail={data}
+          />
         </>
       ) : (
         <EmptyState

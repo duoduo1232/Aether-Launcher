@@ -1216,6 +1216,69 @@ pub(crate) async fn delete_schematic(
     .map_err(|_| "schematic delete task failed".to_owned())?
 }
 
+/// 在系统的文件管理器里定位到这个投影文件。
+///
+/// 只做「选中文件」这一件事，不返回路径给前端 —— IPC 边界是前端从不碰路径，
+/// 这里也一样：解析全部在后端，前端只传它本来就知道的实例 id + 相对路径。
+#[tauri::command]
+pub(crate) async fn reveal_schematic(
+    app: tauri::AppHandle,
+    instance_id: String,
+    relative_path: String,
+    origin: String,
+    origin_version: String,
+) -> Result<(), String> {
+    validate_relative_path(&relative_path, true)?;
+    let id = InstanceId::parse(&instance_id).map_err(|_| "invalid instance ID".to_owned())?;
+    let root = instance_store_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store =
+            InstanceStore::open(&root).map_err(|_| "cannot open the instance store".to_owned())?;
+        let instance = store
+            .load(id)
+            .map_err(|_| "instance not found in the managed store".to_owned())?;
+        let path = resolve_existing_path(&instance, &origin, &origin_version, &relative_path)?;
+        reveal_in_file_manager(&path)
+    })
+    .await
+    .map_err(|_| "reveal task failed".to_owned())?
+}
+
+/// 调系统的「在文件夹中显示」。
+///
+/// Windows 用 `explorer /select,"路径"`（`/select` 会选中该文件），macOS 用
+/// `open -R`，其余平台退回到打开父目录。都是系统自带命令，不需要额外依赖。
+fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // `/select,` 后面直接接路径，中间不能有空格 —— 这是 explorer 的怪癖。
+        let argument = format!("/select,{}", path.display());
+        std::process::Command::new("explorer")
+            .arg(argument)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| "cannot open the system file manager".to_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| "cannot open the system file manager".to_owned())
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let directory = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open")
+            .arg(directory)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| "cannot open the system file manager".to_owned())
+    }
+}
+
 /// 把投影复制或移动到目标文件夹，返回新的相对路径。
 ///
 /// 源和目标可以是同一个实例（整理目录），也可以是不同实例（跨版本共享）。

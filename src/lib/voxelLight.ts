@@ -1,28 +1,63 @@
 /**
- * 方块面的明暗：环境光遮蔽（AO）。
+ * 方块面的明暗，按 Minecraft 原版客户端的规则（白天、满天空光、不算方块光）：
  *
- * 判据照抄 Structura 的 `meshWorker`（shulkr 用的渲染器），不做任何推测：
+ * 1. **按朝向的固定明暗**（`shade`）：上 1.0、下 0.5、南北 0.8、东西 0.6。
+ *    等轴测视角下同时看到顶面和两个侧面，三者亮度不同，建筑才有立体感；
+ *    少了它，石英柱、白墙会糊成一片平面。element 写了 `"shade": false`
+ *    （十字花草、灯笼提手）就不打这一层。
+ * 2. **环境光遮蔽**（AO）：一个顶点看面外侧那一层里的两个侧邻和一个对角，
+ *    原版对四格（含面正前方那格）的亮度取平均，被挡住的格算 0.2，于是
+ *    0/1/2/3 个遮挡对应 1.0/0.8/0.6/0.4；两个侧邻都挡住时对角视作被挡。
+ *    模型的 `ambientocclusion: false`（`block/cross` 一系的植物）不做 AO。
+ * 3. 面不在方块边界上（台阶顶面、楼梯踏步、地毯）时，原版在**方块自己那一层**
+ *    采样，而不是外侧一格 —— 贴墙的台阶顶面靠墙那条边会变暗。
  *
- * - **不做天空光**。它不扫描遮挡、不区分室内室外，方块亮度只由 AO 决定。
- * - **不做按朝向的固定明暗**。`up` 不比 `east` 亮 —— 原版那种 `shade` 表
- *   它压根没有。整张图的立体感全靠 AO。
- * - **AO 四档**：`[1, 0.7, 0.5, 0.2]`。一个顶点看它周围三格（沿面内两个轴
- *   各走一格、再加对角）：两侧都被挡住 → 3 档（0.2，最暗）；否则取三格实心
- *   的数量。
+ * 这些系数都是原版在 sRGB 数值上直接相乘的结果。three.js 在线性空间里做乘法，
+ * 所以写进顶点色之前要用 {@link srgbToLinear} 换一次空间，否则 0.6 的暗角
+ * 实际只暗到约 0.8，草色、树叶色也会发灰。
  *
- * 这样写出来的画面和它在网页里看到的一致，也不需要什么「天空光 / 洞穴光照」
- * 的额外假设 —— 那些是我之前凭印象加的，和参考实现不符。
- *
- * 另外照搬了它的三角形拆分方式：当一个面的两个对角 AO 之和不相等时，换一种
- * 切分方向，避免对角线两侧亮度突变（那个著名的「AO 缝」）。
+ * 三角形拆分：一个面两个对角 AO 之和不相等时换一条对角线，避免亮度沿对角线
+ * 出现折痕。
  */
 
 /**
- * AO 四档亮度，索引即「被挡住的邻居数量」。
+ * AO 四档亮度，索引即「被挡住的格数」。
  *
- * 来自 shulkr 的 `$t = [1, .7, .5, .2]`。
+ * 原版 `AmbientOcclusionFace` 把四格亮度平均，被挡住的格是 0.2、空的是 1.0：
+ * `(1+1+1+1)/4`、`(0.2+1+1+1)/4`……所以是 1.0 / 0.8 / 0.6 / 0.4。
  */
-const AO_BRIGHTNESS = [1, 0.7, 0.5, 0.2];
+const AO_BRIGHTNESS = [1, 0.8, 0.6, 0.4];
+
+/**
+ * 原版按朝向的固定明暗（`BlockAndTintGetter.getShade`，主世界）。
+ */
+const FACE_SHADE: Record<FaceName, number> = {
+  down: 0.5,
+  up: 1,
+  north: 0.8,
+  south: 0.8,
+  west: 0.6,
+  east: 0.6,
+};
+
+/** 一个面按朝向应乘的亮度。`shade = false` 的面恒为 1。 */
+export function faceShade(face: FaceName, shade = true): number {
+  return shade ? FACE_SHADE[face] : 1;
+}
+
+/**
+ * sRGB 数值 → 线性值。
+ *
+ * 原版的染色、AO、朝向明暗都是在 sRGB 数值上相乘的；three.js 把贴图解码到
+ * 线性空间再乘顶点色，最后编码回 sRGB。顶点色先解码一次，乘出来的观感才和
+ * 原版的 `贴图 × 系数` 一致。
+ */
+export function srgbToLinear(value: number): number {
+  if (value <= 0.04045) {
+    return value / 12.92;
+  }
+  return ((value + 0.055) / 1.055) ** 2.4;
+}
 
 /**
  * 每个面的两个切向轴，下标对应 `FACES` 的顺序。
@@ -157,7 +192,8 @@ export function faceIndex(face: FaceName): number {
  * 3. 对角格也看一次；
  * 4. 两侧都实心 → 3 档；否则取三个格子的实心数量。
  *
- * 注意「面外侧那一格」的偏移由 `FACE_AXES` 给出，不是自己这一格。
+ * 「面外侧那一格」的偏移由 `FACE_AXES` 给出。`onBoundary` 为 `false`（面在
+ * 方块内部，如台阶顶面）时改在方块自己那一层采样，和原版一致。
  */
 export function ambientOcclusion(
   vertex: readonly [number, number, number],
@@ -166,6 +202,7 @@ export function ambientOcclusion(
   by: number,
   bz: number,
   solidAt: (x: number, y: number, z: number) => boolean,
+  onBoundary = true,
 ): number {
   const [normalAxis, normalSign, axisU, axisV] = FACE_AXES[faceIndex(face)];
   const corner: [number, number, number] = [vertex[0], vertex[1], vertex[2]];
@@ -174,9 +211,9 @@ export function ambientOcclusion(
   const su = corner[axisU] >= center[axisU] ? 1 : -1;
   const sv = corner[axisV] >= center[axisV] ? 1 : -1;
 
-  // 面外侧那一格。
+  // 采样所在的那一层：面在边界上就是外侧一格，否则是自己这一层。
   const probe: [number, number, number] = [0, 0, 0];
-  probe[normalAxis] = normalSign;
+  probe[normalAxis] = onBoundary ? normalSign : 0;
 
   probe[axisU] = su;
   probe[axisV] = 0;
@@ -196,14 +233,10 @@ export function ambientOcclusion(
 }
 
 /**
- * 一个 AO 档位对应的亮度。
+ * 一个 AO 档位对应的亮度（原版 sRGB 数值）。
  *
- * **直接用 shulkr 的原值** `[1, 0.7, 0.5, 0.2]`，不做任何色彩空间转换。
- *
- * 之前这里套了一层 sRGB→线性，理由是「shulkr 的 WebGL 当最终像素乘，three.js
- * 的顶点色是线性」。那个推理是错的：参考实现的顶点色和纹理**同一个空间**，
- * 乘出来直接就是想要的观感；额外转线性等于把 0.7 压成 0.448，暗角会重得
- * 莫名其妙 —— 画面上就是「到处都有阴影」。
+ * 写进顶点色之前还要过一次 {@link srgbToLinear}，那一步在网格化的最后统一做，
+ * 这里不转。
  */
 export function brightnessOfAo(ao: number): number {
   const index = Math.max(0, Math.min(3, Math.round(ao)));
@@ -223,13 +256,28 @@ export function aoShades(
   by: number,
   bz: number,
   solidAt: (x: number, y: number, z: number) => boolean,
+  onBoundary = true,
 ): [number, number, number, number] {
-  return [
-    brightnessOfAo(ambientOcclusion(corners[0], face, bx, by, bz, solidAt)),
-    brightnessOfAo(ambientOcclusion(corners[1], face, bx, by, bz, solidAt)),
-    brightnessOfAo(ambientOcclusion(corners[2], face, bx, by, bz, solidAt)),
-    brightnessOfAo(ambientOcclusion(corners[3], face, bx, by, bz, solidAt)),
-  ];
+  const at = (index: number) =>
+    brightnessOfAo(
+      ambientOcclusion(corners[index], face, bx, by, bz, solidAt, onBoundary),
+    );
+  return [at(0), at(1), at(2), at(3)];
+}
+
+/**
+ * 面是否贴在方块边界上（原版 `FACE_CUBIC` 判据的简化）。
+ *
+ * 四个顶点沿法线轴的坐标都等于 0（朝负向）或 1（朝正向）才算。`corners`
+ * 必须是**已经套过 variant 旋转**的方块内坐标。
+ */
+export function isOnBoundary(
+  face: FaceName,
+  corners: ReadonlyArray<readonly [number, number, number]>,
+): boolean {
+  const [normalAxis, normalSign] = FACE_AXES[faceIndex(face)];
+  const plane = normalSign > 0 ? 1 : 0;
+  return corners.every((corner) => Math.abs(corner[normalAxis] - plane) < 1e-4);
 }
 
 /**

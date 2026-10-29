@@ -3,7 +3,10 @@ import { isAir } from "./blockColors";
 import {
   aoShades,
   faceOfNormal,
+  faceShade,
+  isOnBoundary,
   shouldFlipDiagonal,
+  srgbToLinear,
   voxelKey,
   type FaceName,
   type VoxelBox,
@@ -135,7 +138,7 @@ export function buildTexturedGeometry(
   // 两个满立方体相邻时被剔掉的那两面本来就完全重合、肉眼看不出差别，所以这一
   // 档是安全的。剩下的脏活留给 `maxQuads`。
   //
-  // 光照：只做逐顶点 AO，不做天空光 —— 和 shulkr 的 meshWorker 一致。
+  // 光照：原版的朝向明暗 × 逐顶点 AO，规则见 `voxelLight`。
   const lightVoxels = collectLightVoxels(voxels, variantsFor);
   // 位置 → 方块 id。剔除「同一种方块相邻」时要比 id，光照表里只有布尔量。
   const blockAt = new Map<string, string>();
@@ -196,15 +199,9 @@ export function buildTexturedGeometry(
             : quad.layer === "cutout"
               ? cutout
               : opaque;
-        const shades = aoShades(
-          faceOfQuad(quad, variant),
-          quad.positions,
-          voxel.x,
-          voxel.y,
-          voxel.z,
-          isSolid,
-        );
-        pushQuad(target, voxel, variant, quad, shades);
+        const placed = placeQuad(quad, variant);
+        const shades = quadBrightness(placed, quad, variant, voxel, isSolid);
+        pushQuad(target, voxel, quad, placed, shades);
       }
     }
     // 含水方块额外叠一层水膜（楼梯、台阶、栅栏的 `waterlogged=true`）。
@@ -327,23 +324,61 @@ function worldFace(face: FaceName, variant: AssetVariant): FaceName {
   return faceOfNormal(x, y, z);
 }
 
-/**
- * 一个四边形属于哪个面（世界方向，AO 采样用）。
- *
- * `cullface` 有值就转成世界方向；十字花草这类没有 `cullface`，只能看法线
- * （法线本来就会被 `rotate` 转好）。
- */
-function faceOfQuad(quad: AssetQuad, variant: AssetVariant): FaceName {
-  if (quad.cullface) {
-    return worldFace(quad.cullface as FaceName, variant);
-  }
-  const [nx, ny, nz] = rotate(
-    quad.normal,
-    variant.rotationX,
-    variant.rotationY,
-    true,
+/** 套过 variant 旋转之后的四边形（方块内坐标 0..1）。 */
+type PlacedQuad = {
+  positions: [number, number, number][];
+  normal: [number, number, number];
+  /** 按法线判出的世界朝向（原版 `FaceBakery` 也是这样定 `direction` 的）。 */
+  face: FaceName;
+};
+
+function placeQuad(quad: AssetQuad, variant: AssetVariant): PlacedQuad {
+  const positions = quad.positions.map((position) =>
+    rotate(position, variant.rotationX, variant.rotationY),
   );
-  return faceOfNormal(nx, ny, nz);
+  const normal = rotate(quad.normal, variant.rotationX, variant.rotationY, true);
+  return { positions, normal, face: faceOfNormal(normal[0], normal[1], normal[2]) };
+}
+
+/**
+ * 四个顶点的亮度：朝向明暗 × AO（原版 sRGB 数值，空间转换在 `toLayer`）。
+ *
+ * - AO 必须用**旋转后**的顶点和世界朝向。拿模型坐标去配世界朝向，横放的
+ *   石英柱、朝东的楼梯，暗角会落在错的那条边上。
+ * - 模型 `ambientocclusion: false`（花草）不做 AO；斜着放的面（十字、灯笼
+ *   提手）原版也不做 —— 它们的法线不沿坐标轴，没有「外侧那一层」。
+ * - element `shade: false` 不乘朝向明暗。
+ */
+function quadBrightness(
+  placed: PlacedQuad,
+  quad: AssetQuad,
+  variant: AssetVariant,
+  voxel: Voxel,
+  isSolid: (x: number, y: number, z: number) => boolean,
+): [number, number, number, number] {
+  const directional = faceShade(placed.face, quad.shade !== false);
+  const axisAligned =
+    placed.normal.filter((component) => Math.abs(component) > 1e-4).length === 1;
+  if (variant.model.ambientOcclusion === false || !axisAligned) {
+    return [directional, directional, directional, directional];
+  }
+  const onBoundary =
+    variant.model.fullCube || isOnBoundary(placed.face, placed.positions);
+  const ao = aoShades(
+    placed.face,
+    placed.positions,
+    voxel.x,
+    voxel.y,
+    voxel.z,
+    isSolid,
+    onBoundary,
+  );
+  return [
+    ao[0] * directional,
+    ao[1] * directional,
+    ao[2] * directional,
+    ao[3] * directional,
+  ];
 }
 
 
@@ -472,19 +507,17 @@ function stateSignature(state: Record<string, string>): string {
 }
 
 /**
- * 把一个四边形推进缓冲，套上 variant 的旋转并平移到体素位置。
+ * 把一个已经旋转好的四边形平移到体素位置，推进缓冲。
  */
 function pushQuad(
   target: number[],
   voxel: Voxel,
-  variant: AssetVariant,
   quad: AssetQuad,
+  placed: PlacedQuad,
   shades: [number, number, number, number],
 ): void {
-  const rotated = quad.positions.map((position) =>
-    rotate(position, variant.rotationX, variant.rotationY),
-  );
-  const normals = rotate(quad.normal, variant.rotationX, variant.rotationY, true);
+  const rotated = placed.positions;
+  const normals = placed.normal;
 
   // 三角形拆分方向要按 AO 决定，不能固定 (0,1,2)(0,2,3)。
   //
@@ -504,10 +537,8 @@ function pushQuad(
     );
     target.push(normals[0], normals[1], normals[2]);
     target.push(quad.uvs[index][0], quad.uvs[index][1]);
-    // 顶点色 = 方块染色 × AO 亮度，**不做色彩空间转换**，和 shulkr 一致。
-    //
-    // `quad.tint` 和 `shade` 都是 0..1 的直接乘数，渲染器那边让顶点色和贴图
-    // 处在同一空间（见 `SchematicPreview` 的 `outputColorSpace`），观感才对得上。
+    // 顶点色 = 方块染色 × 亮度，此时还是原版的 sRGB 数值；`toLayer` 统一
+    // 换成线性值交给 three.js。
     const tint = quad.tint ?? [1, 1, 1];
     const shade = shades[index] ?? 1;
     target.push(tint[0] * shade, tint[1] * shade, tint[2] * shade);
@@ -581,9 +612,11 @@ function toLayer(values: number[]): LayerBuffers {
     normals[index * 3 + 2] = values[base + 5];
     uvs[index * 2] = values[base + 6];
     uvs[index * 2 + 1] = values[base + 7];
-    tints[index * 3] = values[base + 8];
-    tints[index * 3 + 1] = values[base + 9];
-    tints[index * 3 + 2] = values[base + 10];
+    // 原版的染色与明暗是 sRGB 数值上的乘法；three.js 在线性空间里乘顶点色，
+    // 这里换一次空间，两边的结果才一致（见 `voxelLight.srgbToLinear`）。
+    tints[index * 3] = srgbToLinear(values[base + 8]);
+    tints[index * 3 + 1] = srgbToLinear(values[base + 9]);
+    tints[index * 3 + 2] = srgbToLinear(values[base + 10]);
   }
   return { positions, normals, uvs, tints, count };
 }

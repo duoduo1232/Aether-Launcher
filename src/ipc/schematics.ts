@@ -30,6 +30,12 @@ declare module "./call" {
       origin: string;
       originVersion: string;
     };
+    reveal_schematic: {
+      instanceId: string;
+      relativePath: string;
+      origin: string;
+      originVersion: string;
+    };
     paste_schematic: {
       fromInstanceId: string;
       fromPath: string;
@@ -54,6 +60,7 @@ declare module "./call" {
     import_schematic: string;
     import_schematic_folder: SchematicFolderImport | null;
     delete_schematic: null;
+    reveal_schematic: null;
     paste_schematic: string;
     open_schematic_window: string;
   }
@@ -218,6 +225,26 @@ export async function deleteSchematic(
   originVersion: string,
 ): Promise<void> {
   await callCommand("delete_schematic", {
+    instanceId,
+    relativePath,
+    origin,
+    originVersion,
+  });
+}
+
+/**
+ * 在系统的文件管理器里定位到这个投影文件。
+ *
+ * 路径解析全在后端完成，前端只传它本来就持有的三个 id/路径片段 —— 和
+ * `deleteSchematic` 同一个口径。
+ */
+export async function revealSchematic(
+  instanceId: string,
+  relativePath: string,
+  origin: SchematicOrigin,
+  originVersion: string,
+): Promise<void> {
+  await callCommand("reveal_schematic", {
     instanceId,
     relativePath,
     origin,

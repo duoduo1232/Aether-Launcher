@@ -11,8 +11,16 @@ fn maps_known_data_versions_to_releases() {
 
 #[test]
 fn unknown_versions_fall_back_to_the_latest_known_release() {
-    assert_eq!(nearest_release(999_999), Some("1.21.8"));
+    assert_eq!(nearest_release(999_999), Some("26.3"));
+    // 4441 落在 1.21.8 之后、1.21.9 之前。
     assert_eq!(nearest_release(4441), Some("1.21.8"));
+}
+
+#[test]
+fn the_26_x_version_scheme_is_covered() {
+    // 26.x 换了版本号规则，缺这几条时新文件会被就近标成 1.21.8。
+    assert_eq!(nearest_release(4790), Some("26.1.2"));
+    assert_eq!(nearest_release(4554), Some("1.21.9"));
 }
 
 #[test]

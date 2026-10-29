@@ -996,9 +996,143 @@ button { letter-spacing: 0; }
   color: var(--color-neutral-foreground-3, #9d9d9d);
 }
 
+/* 3D 视图外壳：画布 + 右上角视角切换 + 底部键位提示，全部绝对定位在画布上，
+   这样切到第一视角时不用重排。 */
+.schematic-preview-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.schematic-preview-shell > .schematic-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preview-mode-switch {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 8px;
+  background: rgba(20, 22, 27, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+}
+
+.preview-mode-switch button {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, #b9bcc2);
+  font-size: var(--fontSizeBase200, 12px);
+  cursor: pointer;
+}
+
+.preview-mode-switch button:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text, #eef0f3);
+}
+
+.preview-mode-switch button.mode-active {
+  background: var(--accent, #4a9eff);
+  color: #fff;
+}
+
+.preview-keys {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: rgba(20, 22, 27, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted, #b9bcc2);
+  font-size: var(--fontSizeBase200, 12px);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .preview-note {
   margin: 0;
   font-size: 12px;
+}
+
+/* ── 材料清单 ────────────────────────────────────────────────── */
+
+.materials-surface {
+  max-width: min(880px, 92vw);
+}
+
+.materials-content {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.materials-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.materials-search {
+  min-width: 220px;
+}
+
+.materials-table-wrap {
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: 6px;
+}
+
+.materials-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.materials-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--colorNeutralBackground2);
+  text-align: left;
+  font-weight: 600;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.materials-table td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--colorNeutralStroke2);
+  white-space: nowrap;
+}
+
+/* 材料名可能很长，允许换行；数字列保持对齐。 */
+.materials-table td:first-child {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.materials-table tbody tr:hover {
+  background: var(--colorNeutralBackground1Hover);
+}
+
+.materials-empty {
+  display: block;
+  padding: 16px;
+  text-align: center;
 }
 
 /* ── 导入实例对话框 ───────────────────────────────────────────── */

@@ -1,5 +1,11 @@
 import type { AtlasSlot, AssetPack } from "../ipc";
-import { aoShades, voxelKey, type FaceName, type VoxelMap } from "./voxelLight";
+import {
+  aoShades,
+  faceShade,
+  voxelKey,
+  type FaceName,
+  type VoxelMap,
+} from "./voxelLight";
 
 /**
  * 含水方块的水膜几何。
@@ -163,7 +169,11 @@ export function pushWaterFilm(
     if (voxels.has(voxelKey(nx, ny, nz)) && isSolid(nx, ny, nz)) {
       continue;
     }
-    const shades = aoShades(item.face, item.corners, x, y, z, isSolid);
+    // 原版流体也按朝向打暗（顶面 1.0、侧面 0.8/0.6），和方块同一张表。
+    const directional = faceShade(item.face);
+    const shades = aoShades(item.face, item.corners, x, y, z, isSolid).map(
+      (value) => value * directional,
+    ) as [number, number, number, number];
     pushFilmQuad(target, x, y, z, item, shades, slot);
     added += 1;
   }

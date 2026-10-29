@@ -111,13 +111,23 @@ pub fn list_version_jars(game_directory: &Path) -> Vec<VersionJar> {
 /// 小于这个大小的 jar 不当作版本客户端（库 jar 通常几百 KB）。
 const MIN_LIBRARY_JAR_BYTES: u64 = 8 * 1024 * 1024;
 
+/// 缓存内容的格式版本。提取或烘焙的输出变了就加一。
+///
+/// 2：动画贴图只取第一帧（之前整条竖图压进一格，灯笼贴图是乱的）。
+/// 3：侧面 UV 不再上下翻转；四边形带 `shade`、模型带 `ambientOcclusion`。
+const CACHE_FORMAT: u32 = 3;
+
 /// 一个版本 jar 的缓存键。
 ///
 /// 用「路径 + 大小 + 修改时间」而不是文件内容哈希：后者要读完 25 MB，
 /// 而这三项足以判断 jar 是否被替换。
+///
+/// 键里还带 [`CACHE_FORMAT`]：提取逻辑改了，同一个 jar 的旧缓存也必须作废，
+/// 否则修好的问题会一直从磁盘上读回来。
 #[must_use]
 pub fn cache_key(jar: &Path) -> String {
     let mut hasher = DefaultHasher::new();
+    CACHE_FORMAT.hash(&mut hasher);
     jar.to_string_lossy().hash(&mut hasher);
     if let Ok(metadata) = fs::metadata(jar) {
         metadata.len().hash(&mut hasher);

@@ -26,6 +26,7 @@ import { SchematicTree } from "../components/SchematicTree";
 import {
   IMPORT_LIMIT_BYTES,
   deleteSchematic,
+  revealSchematic,
   emptySchematicListing,
   importSchematic,
   importSchematicFolder,
@@ -354,6 +355,22 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
     },
     [reload],
   );
+  const handleReveal = useCallback(
+    async (instanceId: string, item: SchematicSummary) => {
+      setError(null);
+      try {
+        await revealSchematic(
+          instanceId,
+          item.relativePath,
+          item.origin,
+          item.originVersion,
+        );
+      } catch (caught) {
+        setError(describeError(caught));
+      }
+    },
+    [],
+  );
 
   const toggleFolder = useCallback((instanceId: string, path: string) => {
     const key = `${instanceId}|${path}`;
@@ -578,6 +595,7 @@ export function SchematicsPage({ page }: SchematicsPageProps) {
                   items.map((item) => refOf(item)),
                 )
               }
+              onReveal={(item) => void handleReveal(instance.id, item)}
             />
           ))}
 
@@ -614,6 +632,7 @@ type VersionPanelProps = {
   onPreview: (item: SchematicSummary) => void;
   onCopy: (items: SchematicSummary[], move: boolean) => void;
   onDelete: (items: SchematicSummary[]) => void;
+  onReveal: (item: SchematicSummary) => void;
 };
 
 function VersionPanel({
@@ -637,6 +656,7 @@ function VersionPanel({
   onPreview,
   onCopy,
   onDelete,
+  onReveal,
 }: VersionPanelProps) {
   return (
     <section className="status-panel schematic-version" aria-label={`版本 ${instance.name}`}>
@@ -713,6 +733,7 @@ function VersionPanel({
                     onCopy={onCopy}
                     onPaste={onPaste}
                     onDelete={onDelete}
+                    onReveal={onReveal}
                     onStartSelection={onStartSelection}
                     onSelectAll={onSelectAll}
                   />

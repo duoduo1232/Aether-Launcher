@@ -240,9 +240,13 @@ fn parses_metadata_and_region_blocks() {
     let region = &schematic.regions[0];
     assert_eq!(region.name, "main");
     assert_eq!(region.size, [2, 2, 2]);
+    // 属性要保留：预览靠 `facing`/`shape` 挑楼梯变体，丢掉就只会画默认那个。
     assert_eq!(
         region.palette,
-        vec!["minecraft:air".to_owned(), "minecraft:stone".to_owned()]
+        vec![
+            "minecraft:air".to_owned(),
+            "minecraft:stone[variant=smooth]".to_owned()
+        ]
     );
     assert_eq!(region.indices, vec![1, 0, 1, 1, 0, 0, 1, 1]);
 }
@@ -374,7 +378,7 @@ fn nearest_release_maps_data_versions() {
     assert_eq!(nearest_release(1342), None);
     assert_eq!(nearest_release(3954), Some("1.21"));
     assert_eq!(nearest_release(4189), Some("1.21.4"));
-    assert_eq!(nearest_release(999_999), Some("1.21.8"));
+    assert_eq!(nearest_release(999_999), Some("26.3"));
 }
 
 #[test]

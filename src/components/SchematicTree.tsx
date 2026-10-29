@@ -58,6 +58,8 @@ export type SchematicTreeProps = {
   onCopy: (items: SchematicSummary[], move: boolean) => void;
   onPaste: (folder: string) => void;
   onDelete: (items: SchematicSummary[]) => void;
+  /** 在系统文件管理器里定位到这条投影。 */
+  onReveal: (item: SchematicSummary) => void;
   onStartSelection: (item: SchematicSummary) => void;
   onSelectAll: (items: SchematicSummary[]) => void;
 };
@@ -233,6 +235,13 @@ function FileRow({ item, depth, ...props }: FileRowProps) {
               onClick={() => props.onCopy(targets, true)}
             >
               剪切{targets.length > 1 ? ` ${targets.length} 项` : ""}
+            </MenuItem>
+            <MenuItem
+              icon={<FolderOpen24Regular />}
+              disabled={props.busy}
+              onClick={() => props.onReveal(item)}
+            >
+              定位到文件
             </MenuItem>
             <MenuItem
               icon={<Delete24Regular />}

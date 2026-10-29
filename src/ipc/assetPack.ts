@@ -47,17 +47,28 @@ export type AssetQuad = {
    * 但保留以便排查「贴上错图」这类问题。
    */
   uv: [string, string] | null;
+  /** 顶点色 RGB：草的顶面、树叶乘群系色，其余是 `[1,1,1]`。 */
+  tint?: [number, number, number];
+  /** 是否按朝向变暗（原版 element 的 `shade`）。缺省视为 `true`。 */
+  shade?: boolean;
 };
 
 /** 一个方块状态绑定。 */
 export type AssetVariant = {
   when: [string, string][];
+  /**
+   * 这条变体是否「独占」：`variants` 写法为 true（命中多个时只取最精确的
+   * 一个），`multipart` 写法为 false（多个部件叠加）。
+   */
+  exclusive: boolean;
   rotationX: number;
   rotationY: number;
   model: {
     quads: AssetQuad[];
     textureIds: string[];
     fullCube: boolean;
+    /** 原版模型的 `ambientocclusion`（花草是 `false`）。缺省视为 `true`。 */
+    ambientOcclusion?: boolean;
   };
 };
 

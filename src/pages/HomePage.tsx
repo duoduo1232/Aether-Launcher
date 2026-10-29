@@ -145,41 +145,44 @@ export function HomePage({
               ? `版本 ${featured.version}。在实例页里可以启动、改设置或删除。`
               : "从现有 .minecraft 或其他启动器导入，Aether 只补齐缺失内容"}
           </Text>
-          <div className="instance-actions">
-            <Button
-              appearance="primary"
-              icon={<Add24Regular />}
-              onClick={onImport}
-            >
-              导入实例
-            </Button>
-            <Button
-              icon={<ArrowSync24Regular />}
-              onClick={() => void runScan()}
-              disabled={scanning}
-            >
-              扫描本机
-            </Button>
-            {scanning ? <Spinner size="tiny" /> : null}
-            {scan ? (
-              <Text className="muted instance-scan-note">
-                找到 {scan.installations.length} 个启动器，{scan.totalVersions} 个版本
-                {scan.installations.length > 0 ? (
-                  <Button appearance="transparent" size="small" onClick={onOpenInstances}>
-                    去导入
-                  </Button>
-                ) : null}
-              </Text>
-            ) : null}
-            {scanError ? (
-              <Text className="muted instance-scan-note">扫描失败：{scanError}</Text>
-            ) : null}
-            {!desktop ? (
-              <Text className="muted instance-scan-note">
-                浏览器预览里读不到本机启动器，打开桌面版即可扫描。
-              </Text>
-            ) : null}
-          </div>
+          {/* 已经有实例时不再占版面：导入入口在实例页的页头，首页只留启动。 */}
+          {instances.length === 0 ? (
+            <div className="instance-actions">
+              <Button
+                appearance="primary"
+                icon={<Add24Regular />}
+                onClick={onImport}
+              >
+                导入实例
+              </Button>
+              <Button
+                icon={<ArrowSync24Regular />}
+                onClick={() => void runScan()}
+                disabled={scanning}
+              >
+                扫描本机
+              </Button>
+              {scanning ? <Spinner size="tiny" /> : null}
+              {scan ? (
+                <Text className="muted instance-scan-note">
+                  找到 {scan.installations.length} 个启动器，{scan.totalVersions} 个版本
+                  {scan.installations.length > 0 ? (
+                    <Button appearance="transparent" size="small" onClick={onOpenInstances}>
+                      去导入
+                    </Button>
+                  ) : null}
+                </Text>
+              ) : null}
+              {scanError ? (
+                <Text className="muted instance-scan-note">扫描失败：{scanError}</Text>
+              ) : null}
+              {!desktop ? (
+                <Text className="muted instance-scan-note">
+                  浏览器预览里读不到本机启动器，打开桌面版即可扫描。
+                </Text>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <Tooltip
           content={featured ? "在实例页启动这个实例" : "导入实例后即可启动"}
