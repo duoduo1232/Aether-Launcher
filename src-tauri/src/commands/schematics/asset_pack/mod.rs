@@ -400,55 +400,6 @@ mod tests {
         }
         assert!(checked > 0, "no quads to check");
     }
-
-    /// UV 的 v 方向必须和 shulkr 的 `pt()` 一致：**同一个面的第一个顶点
-    /// （视觉上的上方）拿到较大的 v**。
-    ///
-    /// 渲染端保持 three.js 默认的 `flipY = true`（上传时把图上下翻），所以
-    /// 这里的 v 是「从贴图底部往上数」。两边必须配对：把 `face_uvs` 里的
-    /// `s = 1 - o` 改成 `s = o`，或者渲染端再关一次 `flipY`，花草和挂灯
-    /// 就会整体倒过来 —— 这个测试就是钉住这件事。
-    #[test]
-    fn uv_v_grows_towards_the_visual_bottom() {
-        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
-            return;
-        };
-        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
-
-        // 只看由 `from`/`to` 推导出来的 UV。模型里显式写了 `uv` 的（活板门、
-        // 栅栏门）就是原版素材自己的朝向，可能故意倒着贴，不能拿来断言。
-        //
-        // 用一个全格立方体做样本：`minecraft:stone` 这类基础方块的六个面都
-        // 没有显式 uv，且都是满 UV，方向一定来自 `pt()` 的推导。
-        let Some(bindings) = pack.blocks.get("minecraft:stone") else {
-            return;
-        };
-        let mut checked = 0;
-        for binding in bindings {
-            for quad in &binding.model.quads {
-                // 只看竖直面（north/south/west/east）：上下两端的 y 不同。
-                if quad.positions[0][1] == quad.positions[1][1] {
-                    continue;
-                }
-                let low = if quad.positions[0][1] < quad.positions[1][1] {
-                    0
-                } else {
-                    1
-                };
-                let high = 1 - low;
-                let v_low = quad.uvs[low][1];
-                let v_high = quad.uvs[high][1];
-                assert!(
-                    v_low < v_high,
-                    "v is upside down: bottom y={} has v={v_low}, top y={} has v={v_high}",
-                    quad.positions[low][1],
-                    quad.positions[high][1],
-                );
-                checked += 1;
-            }
-        }
-        assert!(checked > 0, "no vertical quads to check");
-    }
 }
 
 #[cfg(test)]

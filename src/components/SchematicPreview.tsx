@@ -329,17 +329,14 @@ function addTexturedMeshes(
     loaded.minFilter = THREE.NearestFilter;
     loaded.generateMipmaps = false;
     loaded.colorSpace = THREE.SRGBColorSpace;
-    // 保持 three.js 的默认 `flipY = true`。
-    //
-    // `face_uvs` 是照 shulkr 的 `pt()` 逐字抄的，而 shulkr 从没碰过 `flipY`，
-    // 用的是 three.js 默认值。它的 UV 里 v=0 对应贴图底部（`s = 1 - o`，
-    // `o` 是模型里靠上的那一侧），正好和「上传时先上下翻图」配对。
-    //
-    // 之前这里设过 `flipY = false`（`0b067a8`），理由是「Minecraft 的 v 越大
-    // 越靠下」。但 `pt()` 已经把 v 反过来了，再关 flipY 就是翻两遍：花草、
-    // 挂着的灯笼、树苗全部上下颠倒。
+    // **必须关掉 flipY**：three.js 默认在上传时把图片上下翻转，让 UV 原点落在
+    // 左下；而 Minecraft 的 UV 是「v 越大越靠下」，与 PNG 的行序一致。两者
+    // 叠加会让每个面的贴图上下颠倒。
+    loaded.flipY = false;
     loaded.needsUpdate = true;
   });
+  // 加载完成前也要先设好，避免首帧按默认值上传。
+  texture.flipY = false;
   disposables.push(texture);
 
   const layers: [LayerBuffers, THREE.MeshBasicMaterial][] = [
