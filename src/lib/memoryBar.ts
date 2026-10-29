@@ -1,40 +1,41 @@
 import type { SystemMemory } from "../ipc";
-import { memorySliderStep, minMemoryMiB, sliderMaxMiB, usedMiB } from "./memory";
+import { minMemoryMiB, sliderMaxMiB, usedMiB } from "./memory";
 
 /**
- * 内存滑块的几何：一个分配值，两个手柄，两个阶段。
+ * 内存滑块的几何：**一根轨道、一个手柄、一个方向**。
  *
- * 轨道是整台电脑的物理内存：左边是系统已用（红），分界线右边是可用内存。
- * - 阶段一：分配值不超过可用内存。右手柄在可用区里移动，绿色从分界线铺到手柄。
- * - 阶段二：右手柄推到底（「满」，即把可用内存全部分配）之后，左边的分界线上
- *   出现第二个手柄，可以继续往左拖进红区——分配值超过了可用内存，那一段是橙色，
- *   意味着会把内存挤爆。
- * 两个手柄控制的是同一个值，所以键盘和读屏也只需要一个滑块。
+ * 轨道是一条**分配值轴**，左端 0 MiB，右端是这台机器的物理内存（`totalMib`）。
+ * 手柄就在 `分配值 / totalMib` 处，所以往右拖永远是多分配、往左拖永远是少分配，
+ * 和任何一个普通滑块一样。
+ *
+ * 轨道上还有两个标记：
+ *
+ * - **分界线**（`dividerPct`）在 `已用 / total` 处，左边的红区是别的程序占着的内存，
+ *   这里只是想说明「还剩多少地方能放」。
+ * - **橙色区**从分界线开始往右。手柄一旦越过分界线，说明「已用 + 分配」超过了物理
+ *   内存，那一段就是橙的，意思是会挤爆。
+ *
+ * 两个标记都在手柄右边或左边按同一把尺子量，没有任何一段是反向的。早先的版本把
+ * 轨道画成物理内存、又在分界线上放了第二个手柄，越界越多它越往左——这里把它整个
+ * 去掉，越界只体现为手柄走进橙区。
  */
 
 export type BarGeometry = {
-  /** 轨道代表的总内存 */
+  /** 轨道右端代表的内存：可分配的上限 */
   totalMib: number;
-  /** 其他程序已用的内存；不知道时为 null，此时没有红区和第二个手柄 */
+  /** 其他程序已用的内存；不知道时为 null，此时没有分界线和橙区 */
   usedMib: number | null;
-  usedPct: number;
-  /** 「满」：把可用内存全部分配（按步长取整） */
-  fullMib: number;
+  /** 分界线位置：已用内存占轨道的百分比 */
+  dividerPct: number;
   /** 分配值，已夹到可调范围内 */
   valueMiB: number;
-  /** 超出可用内存的部分 */
+  /** 手柄位置：分配值占轨道的百分比 */
+  thumbPct: number;
+  /** 超出可用内存的部分；不知道已用内存时为 0 */
   overMiB: number;
-  rightPct: number;
-  /**
-   * 橙色手柄的位置：永远在分界线上或分界线左边（分配值越界越多，越往左）。
-   * 不知道已用内存时没有分界线，也就没有这个手柄，为 null。
-   */
-  leftPct: number | null;
+  /** 橙色区是否可见：手柄越过了分界线 */
+  over: boolean;
 };
-
-function floorToStep(value: number): number {
-  return Math.floor(value / memorySliderStep) * memorySliderStep;
-}
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
@@ -47,20 +48,19 @@ export function barGeometry(valueMiB: number, system: SystemMemory | null): BarG
   const pct = (mib: number) => clamp((mib / totalMib) * 100, 0, 100);
 
   const value = clamp(valueMiB, minMemoryMiB, max);
-  const usedPct = used === null ? 0 : pct(used);
-  const fullMib =
-    used === null ? max : clamp(floorToStep(totalMib - used), minMemoryMiB, max);
-  const overMiB = used === null ? 0 : Math.max(0, value - fullMib);
+  const dividerPct = used === null ? 0 : pct(used);
+  // 还能再分多少：不分阶段、不取整，只是用来算越界量
+  const freeMib = used === null ? totalMib : Math.max(0, totalMib - used);
+  const overMiB = used === null ? 0 : Math.max(0, value - freeMib);
 
   return {
     totalMib,
     usedMib: used,
-    usedPct,
-    fullMib,
+    dividerPct,
     valueMiB: value,
+    thumbPct: pct(value),
     overMiB,
-    rightPct: used === null ? pct(value) : clamp(usedPct + pct(Math.min(value, fullMib)), 0, 100),
-    leftPct: used === null ? null : clamp(usedPct - pct(overMiB), 0, 100),
+    over: overMiB > 0,
   };
 }
 
@@ -83,70 +83,56 @@ function roundToStep(value: number, fine: boolean): number {
 }
 
 /**
- * 拖右手柄：位置（轨道上的百分比）换成分配值，只在可用区里取值。
- * `fine` 为 true（按住 Shift）时不吸附到 512 MiB。
+ * 轨道上的某个位置对应多少内存。
+ *
+ * 只有一个手柄、一条轴，所以位置和值一一对应，点哪儿就是哪儿。
  */
-export function valueFromRightThumb(
+export function valueFromPosition(
   pct: number,
   system: SystemMemory | null,
   fine = false,
 ): number {
-  const geometry = barGeometry(minMemoryMiB, system);
-  const fromDivider = ((pct - geometry.usedPct) / 100) * geometry.totalMib;
-  return clamp(roundToStep(fromDivider, fine), minMemoryMiB, geometry.fullMib);
-}
-
-/** 拖左手柄：位置换成分配值，从「满」开始往红区里加。吸附的是最终的分配值。 */
-export function valueFromLeftThumb(
-  pct: number,
-  system: SystemMemory | null,
-  fine = false,
-): number {
-  const geometry = barGeometry(minMemoryMiB, system);
   const max = sliderMaxMiB(system);
-  const over = ((geometry.usedPct - pct) / 100) * geometry.totalMib;
-  return clamp(roundToStep(geometry.fullMib + over, fine), geometry.fullMib, max);
+  const totalMib = system?.totalMib ?? max;
+  const raw = (clamp(pct, 0, 100) / 100) * totalMib;
+  return clamp(roundToStep(raw, fine), minMemoryMiB, max);
 }
 
 /**
- * 拖任何一个手柄：都是相对的，手柄不会在按下的瞬间跳到指针下面，而是保持按下时的偏移。
- * `increasePct` 是「多分配」的方向上指针移动的百分比（负数是少分配）：蓝色手柄往右、
- * 橙色手柄往左都是多分配。位置全部由同一个分配值算出来，所以顺序是自然的——
- * 蓝色没到底时多出来的部分让蓝色往右增加；蓝色到底之后继续多分配，橙色才往左走进红区；
- * 反方向则是橙色先退回分界线，再往下蓝色才减少。
+ * 拖动手柄：相对的，按下时手柄不跳到指针底下，而是保持按下的偏移。
  *
- * 结果默认吸附到 512 MiB 的整数倍（最小值和上限本身仍可到达）；`fine` 为 true
- * （按住 Shift）时只取整到 32 MiB。
+ * `movedPct` 是指针相对按下点移动了多少个轨道百分比，往右为正。位置和值一一对应，
+ * 所以就是「原值 + 这一段对应的内存」，没有任何分阶段的分支。
  */
 export function valueFromDrag(
   startValueMiB: number,
-  increasePct: number,
+  movedPct: number,
   system: SystemMemory | null,
   fine = false,
 ): number {
-  const geometry = barGeometry(minMemoryMiB, system);
   const max = sliderMaxMiB(system);
+  const totalMib = system?.totalMib ?? max;
   return clamp(
-    roundToStep(startValueMiB + (increasePct / 100) * geometry.totalMib, fine),
+    roundToStep(startValueMiB + (movedPct / 100) * totalMib, fine),
     minMemoryMiB,
     max,
   );
 }
 
-/** 轨道上的一根刻度：位置是轨道上的百分比，`valueMiB` 是它代表的分配值。 */
+/** 轨道上的一根刻度：位置是轨道上的百分比，`valueMiB` 是它代表的内存。 */
 export type MemoryTick = { valueMiB: number; pct: number; major: boolean };
 
 /** 刻度最多这么多根，再多在窄轨道上就糊成一片。 */
 const maxTicks = 32;
 
 /**
- * 吸附网格对应的刻度：分配值每 512 MiB 一根，位置和手柄完全一致——可用区里从分界线
- * 往右，越过「满」之后在红区里从分界线往左。内存很大时刻度间隔翻倍（1 GiB、2 GiB…），
- * 保证不超过 32 根；每个整 GiB（间隔翻倍后是每两格）画得更长一些。
+ * 吸附网格对应的刻度：每 512 MiB 一根，位置和手柄用的是同一把尺子，所以刻度就是
+ * 手柄会停下的那些地方。内存很大时刻度间隔翻倍（1 GiB、2 GiB…），保证不超过 32 根；
+ * 每个整 GiB（间隔翻倍后是每两格）画得更长一些。
  */
 export function memoryTicks(system: SystemMemory | null): MemoryTick[] {
-  const geometry = barGeometry(minMemoryMiB, system);
   const max = sliderMaxMiB(system);
+  const totalMib = system?.totalMib ?? max;
   let step = snapStepMiB;
   while ((max - minMemoryMiB) / step > maxTicks) {
     step *= 2;
@@ -155,22 +141,11 @@ export function memoryTicks(system: SystemMemory | null): MemoryTick[] {
 
   const ticks: MemoryTick[] = [];
   for (let value = minMemoryMiB; value <= max; value += step) {
-    const beyondFull = geometry.usedMib !== null && value > geometry.fullMib;
-    const pct = beyondFull
-      ? geometry.usedPct - ((value - geometry.fullMib) / geometry.totalMib) * 100
-      : geometry.usedPct + (value / geometry.totalMib) * 100;
-    if (pct < 0 || pct > 100) {
-      continue;
-    }
-    ticks.push({ valueMiB: value, pct, major: value % majorEvery === 0 });
+    ticks.push({
+      valueMiB: value,
+      pct: clamp((value / totalMib) * 100, 0, 100),
+      major: value % majorEvery === 0,
+    });
   }
   return ticks;
-}
-
-/**
- * 点在轨道上（不是手柄）时该动哪个手柄：点在分界线左边（红区）就是想直接把橙色手柄
- * 放到那里；其余位置动蓝色手柄。不知道已用内存时只有蓝色手柄。
- */
-export function thumbForTrackPress(pct: number, geometry: BarGeometry): "right" | "left" {
-  return geometry.usedMib !== null && pct < geometry.usedPct ? "left" : "right";
 }

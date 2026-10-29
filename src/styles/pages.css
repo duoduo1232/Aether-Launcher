@@ -881,29 +881,34 @@
 /* 系统已用：从最左边到分界线，左端圆角贴合胶囊 */
 .memory-seg.used {
   left: calc(var(--thumb) / -2 + 1px);
-  width: calc(var(--used) * 1% + var(--thumb) / 2 - 1px);
+  width: calc(var(--divider) * 1% + var(--thumb) / 2 - 1px);
   border-radius: calc(var(--track-h) / 2) 0 0 calc(var(--track-h) / 2);
   background: var(--used-color);
 }
 
-/* 分配：从分界线到右手柄 */
+/* 分配：从 0 铺到手柄。整段都在手柄左边，所以跨不跨分界线都是同一个方向 */
 .memory-seg.alloc {
-  left: calc(var(--used) * 1%);
-  width: calc((var(--right) - var(--used)) * 1%);
+  left: calc(var(--thumb) / -2 + 1px);
+  width: calc(var(--pos) * 1% + var(--thumb) / 2 - 1px);
+  border-radius: calc(var(--track-h) / 2) 0 0 calc(var(--track-h) / 2);
   background: var(--alloc-color);
 }
 
-/* 越过可用内存的那段，盖在红区上，从第二个手柄到分界线 */
+/*
+ * 越过可用内存的那一段：从分界线到手柄，盖在「已用」和「分配」上面。
+ * 手柄没过分界线时宽度为 0，什么也看不见。
+ */
 .memory-seg.over {
-  left: calc(var(--left) * 1%);
-  width: calc((var(--used) - var(--left)) * 1%);
+  left: calc(var(--divider) * 1%);
+  width: calc((var(--pos) - var(--divider)) * 1%);
+  border-radius: 0 calc(var(--track-h) / 2) calc(var(--track-h) / 2) 0;
   background: var(--over-color);
 }
 
 .memory-divider {
   position: absolute;
   top: calc((var(--thumb) - var(--track-h)) / 2 - 2px);
-  left: calc(var(--used) * 1%);
+  left: calc(var(--divider) * 1%);
   width: 2px;
   height: calc(var(--track-h) + 4px);
   margin-left: -1px;
@@ -954,13 +959,12 @@
   cursor: default;
 }
 
-.memory-thumb.right {
-  left: calc(var(--right) * 1%);
+.memory-thumb {
+  left: calc(var(--pos) * 1%);
 }
 
-.memory-thumb.left {
-  left: calc(var(--left) * 1%);
-  z-index: 2;
+/* 手柄走进橙区时，圆钮的描边也换成橙色，和轨道上的警示保持一致 */
+.memory-bar[data-over="true"] .memory-thumb {
   border-color: var(--ring-over);
 }
 
@@ -986,7 +990,7 @@
 }
 
 /* 键盘操作时的焦点：只在蓝色手柄上画一圈，不在整条轨道外面套框 */
-.memory-bar[data-keyboard="true"] .memory-track:has(.memory-input:focus) .memory-thumb.right {
+.memory-bar[data-keyboard="true"] .memory-track:has(.memory-input:focus) .memory-thumb {
   box-shadow: 0 0 0 3px var(--colorStrokeFocus2), var(--shadow4);
 }
 
@@ -1033,8 +1037,8 @@
 
 .memory-over-label span {
   position: absolute;
-  left: calc(var(--left) * 1%);
-  width: calc((var(--used) - var(--left)) * 1%);
+  left: calc(var(--divider) * 1%);
+  width: calc((var(--pos) - var(--divider)) * 1%);
   min-width: 3.5em;
   color: var(--colorStatusWarningForeground1);
   font-size: var(--fontSizeBase200);
