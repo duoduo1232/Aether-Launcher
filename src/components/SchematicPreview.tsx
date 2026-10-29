@@ -2,37 +2,66 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AssetPack, SchematicDetail } from "../ipc";
-import { buildRenderData } from "../lib/schematicRender";
 import {
   buildTexturedGeometry,
   type LayerBuffers,
 } from "../lib/texturedMesh";
+import { createWalkController } from "../lib/walkControls";
+import { boundsOfVoxels } from "../lib/voxelLight";
+
+type ViewMode = "orbit" | "walk";
+
+/** 切换视角的自定义事件名：渲染循环在 effect 里，React 通过它发指令。 */
+const VIEW_MODE_EVENT = "aether-view-mode";
 
 type SchematicPreviewProps = {
   detail: SchematicDetail;
   /**
-   * 从版本 jar 提取的方块资源包。为空时退回纯色方块 —— 形状仍然对，但看不到
-   * 木板纹理、半砖斜面这些细节。
+   * 从版本 jar 提取的方块资源包。为空时什么都不画，由界面提示去提取材质。
    */
   pack?: AssetPack | null;
+  /** 拿不到贴图的方块数（材质版本与投影版本不一致时通常很多）。 */
+  onMissingBlocks?: (count: number) => void;
 };
 
 /**
  * 投影图的 3D 预览。
  *
- * 两条渲染路径：
- * - **有资源包**：按真实方块模型展开成带 UV 的三角形，一张图集贴图，按
- *   `opaque` / `cutout` / `translucent` 分三批绘制。楼梯、半砖、栏杆的形状和
- *   纹理都来自 Minecraft 自己的模型定义。
- * - **没有资源包**：退回「一个方块一个实例 + 代表色」（`InstancedMesh`），
- *   形状全是整方块，但至少能看出体量。
+ * 只有一条渲染路径：按真实方块模型展开成带 UV 的三角形，一张图集贴图，
+ * 按 `opaque` / `cutout` / `translucent` 分三批绘制。楼梯、半砖、栏杆的形状
+ * 和纹理都来自 Minecraft 自己的模型定义。
  *
- * 视角固定为正交等轴测（`OrthographicCamera`）：投影图是方格建筑，透视会让
- * 远处缩小、看起来是歪的。支持拖动旋转、滚轮缩放、右键平移。
+ * 两种视角：
+ *
+ * - **环绕**（默认）：正交等轴测。投影图是方格建筑，透视会让远处缩小、看起来
+ *   是歪的。拖动旋转、滚轮缩放、右键平移。
+ * - **第一视角**：透视相机，WASD 走动、空格上升、Shift 下降、双击 W 冲刺。
+ *   键位和碰撞都在 `walkControls` 里。
+ *
+ * 光照**不用 three.js 的光源**：方块明暗由 `voxelLight` 算好写进顶点色
+ * （天空光 + 原版 shade 系数 + AO）。用 Lambert 光照的话整张图会随视角明暗
+ * 变化，和 Minecraft 那种完全固定的方块明暗对不上。
  */
-export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps) {
+export function SchematicPreview({
+  detail,
+  pack = null,
+  onMissingBlocks,
+}: SchematicPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [failed, setFailed] = useState(false);
+  const [mode, setMode] = useState<ViewMode>("orbit");
+  const reportMissing = useRef(onMissingBlocks);
+  useEffect(() => {
+    reportMissing.current = onMissingBlocks;
+  }, [onMissingBlocks]);
+
+  // 视角模式是 React 状态（要给按钮显示），渲染循环读的是事件。两边靠这个
+  // effect 同步：状态一变就发事件，循环里的 applyMode 收到后换相机。
+  useEffect(() => {
+    containerRef.current?.dispatchEvent(
+      new CustomEvent<ViewMode>(VIEW_MODE_EVENT, { detail: mode }),
+    );
+  }, [mode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -40,13 +69,19 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
       return;
     }
 
-    // 有资源包走贴图；没有就走纯色。两条路径都要先算出场景尺度。
-    const textured = pack ? buildTexturedGeometry(detail, pack) : null;
-    const solid = pack ? null : buildRenderData(detail);
-    const hasContent = textured
-      ? textured.quadCount > 0 || textured.fallback.count > 0
-      : (solid?.count ?? 0) > 0;
-    if (!hasContent) {
+    // 只有一条渲染路径：真实模型 + 贴图。
+    //
+    // 以前还有一条「纯色方块」回退（一个方块一个彩色立方体）。它会让预览在
+    // 缺少材质时显示成一片色块，而且和真实模型的坐标口径差半格，看起来就是
+    // 位置错。现在没有资源包就什么都不画，由界面提示去提取材质。
+    if (!pack) {
+      return;
+    }
+    const textured = buildTexturedGeometry(detail, pack);
+    // 材质版本和投影版本不一致时，这里会是一个很大的数：那些方块找不到
+    // 贴图就不画了，画面上就是「墙漏风」。把数量报给界面，别让人猜。
+    reportMissing.current?.(textured.missingBlocks);
+    if (textured.quadCount === 0) {
       return;
     }
 
@@ -59,8 +94,11 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
     }
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(container.clientWidth, container.clientHeight);
-    // 透明方块要按像素混合，所以关掉自动清屏的深度写入顺序假设。
     renderer.setClearColor(0x1b1d23, 1);
+    // 第一视角要在 canvas 上监听 keydown，而 canvas 默认不可聚焦 ——
+    // 不设 tabindex 的话，点了画布也拿不到键盘事件，人就走不动。
+    renderer.domElement.tabIndex = 0;
+    renderer.domElement.style.outline = "none";
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -68,21 +106,22 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
 
     // 场景按**真实包围盒**取景，不能一直盯原点：投影图里的方块用世界绝对
     // 坐标（y 可能从 60 起、z 从 183 起），盯着 (0,0,0) 会把建筑推出视野。
-    const bounds = textured ? boundsOfLayers(textured) : boundsOfSolid(solid!);
+    const bounds = boundsOfLayers(textured);
     const center = bounds.center;
     const extent = bounds.radius;
 
-    const aspect = container.clientWidth / Math.max(1, container.clientHeight);
+    const startAspect =
+      container.clientWidth / Math.max(1, container.clientHeight);
     const half = extent * 1.15;
     const camera = new THREE.OrthographicCamera(
-      -half * aspect,
-      half * aspect,
+      -half * startAspect,
+      half * startAspect,
       half,
       -half,
       0.1,
       Math.max(200, extent * 40),
     );
-    // 等轴测：从 (±1, ±0.8, ±1) 方向看，对准包围盒中心。
+    // 等轴测：从 (1, 0.8, 1) 方向看，对准包围盒中心。
     camera.position.set(
       center.x + extent * 1.5,
       center.y + extent * 1.2,
@@ -94,35 +133,93 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.target.copy(center);
+    // 正交相机的 `zoom` 只改视口、不改相机到目标的距离，而 OrbitControls 的
+    // 灵敏度只看距离 —— 于是放大后拖起来和远景一样快，稍一动画面就飞出去。
+    //
+    // 但也不能按 zoom 除到底：那样放大 10 倍后平移只剩 1/10，右键根本拖不动。
+    // 按**平方根**收，放大 10 倍仍保留约 32% 速度，手感是「慢慢变慢」。
+    const applySensitivity = () => {
+      const damping = 1 / Math.sqrt(Math.max(1, camera.zoom));
+      controls.rotateSpeed = 0.9 * damping;
+      controls.panSpeed = 1.2 * damping;
+    };
+    applySensitivity();
+    controls.addEventListener("change", applySensitivity);
     controls.update();
-
-    // 模拟 Minecraft 的光照：环境光很暗，主要靠两盏方向光，方块之间才有层次。
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.35);
-    sun.position.set(extent, extent * 2, extent);
-    scene.add(sun);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.45);
-    fill.position.set(-extent, extent, -extent);
-    scene.add(fill);
 
     const disposables: Disposable[] = [];
 
-    if (textured) {
-      addTexturedMeshes(scene, textured, pack!, disposables);
-      if (textured.fallback.count > 0) {
-        addFallbackMeshes(scene, detail, textured.fallback.count, disposables);
+    addTexturedMeshes(scene, textured, pack, disposables);
+    addGrid(scene, bounds, disposables);
+
+    // 第一视角用一台独立的透视相机：人眼就是透视的，正交会在走动时把远近
+    // 压成一样大。两台相机同时存在，切换只是换 `render` 的入参。
+    const walkCamera = new THREE.PerspectiveCamera(
+      70,
+      startAspect,
+      0.05,
+      Math.max(400, extent * 60),
+    );
+    const walkVoxels = textured.voxels;
+    const walkBounds = boundsOfVoxels(walkVoxels, {
+      minX: Math.floor(center.x - extent),
+      minY: Math.floor(center.y - extent),
+      minZ: Math.floor(center.z - extent),
+      maxX: Math.ceil(center.x + extent),
+      maxY: Math.ceil(center.y + extent),
+      maxZ: Math.ceil(center.z + extent),
+    });
+    let walker: ReturnType<typeof createWalkController> | null = null;
+    let viewMode: ViewMode = "orbit";
+    let activeCamera: THREE.Camera = camera;
+
+    const applyMode = (next: ViewMode) => {
+      if (next === viewMode) {
+        return;
       }
-      addGrid(scene, bounds, disposables);
-    } else {
-      addSolidMesh(scene, solid!, disposables);
-      addGrid(scene, bounds, disposables);
-    }
+      viewMode = next;
+      if (viewMode === "walk") {
+        // 环绕控制器会让拖动和第一视角的拖动抢鼠标，必须停掉。
+        controls.enabled = false;
+        walker?.dispose();
+        walker = createWalkController({
+          camera: walkCamera,
+          dom: renderer.domElement,
+          voxels: walkVoxels,
+          bounds: walkBounds,
+          active: true,
+        });
+        activeCamera = walkCamera;
+      } else {
+        walker?.dispose();
+        walker = null;
+        controls.enabled = true;
+        activeCamera = camera;
+        // 第一视角在 canvas 上监听了 keydown，退出时把焦点交还，别让
+        // 空格键继续被画布吞掉（否则按空格翻不了页面、也点不了按钮）。
+        renderer.domElement.blur();
+      }
+    };
+
+    const onRequestMode = (event: Event) => {
+      const request = event as CustomEvent<ViewMode>;
+      applyMode(request.detail);
+    };
+    container.addEventListener(VIEW_MODE_EVENT, onRequestMode);
 
     let frame = 0;
+    let previous = performance.now();
     const animate = () => {
       frame = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      const now = performance.now();
+      const delta = (now - previous) / 1000;
+      previous = now;
+      if (viewMode === "walk") {
+        walker?.update(delta);
+      } else {
+        controls.update();
+      }
+      renderer.render(scene, activeCamera);
     };
     animate();
 
@@ -136,13 +233,18 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
       camera.top = half;
       camera.bottom = -half;
       camera.updateProjectionMatrix();
+      walkCamera.aspect = nextAspect;
+      walkCamera.updateProjectionMatrix();
       renderer.setSize(width, height);
     });
     observer.observe(container);
 
     return () => {
+      container.removeEventListener(VIEW_MODE_EVENT, onRequestMode);
       observer.disconnect();
       cancelAnimationFrame(frame);
+      walker?.dispose();
+      controls.removeEventListener("change", applySensitivity);
       controls.dispose();
       for (const item of disposables) {
         item.dispose();
@@ -171,12 +273,37 @@ export function SchematicPreview({ detail, pack = null }: SchematicPreviewProps)
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="schematic-preview"
-      role="img"
-      aria-label={`投影预览：${detail.metadata.name}`}
-    />
+    <div className="schematic-preview-shell">
+      <div
+        ref={containerRef}
+        className="schematic-preview"
+        role="img"
+        aria-label={`投影预览：${detail.metadata.name}`}
+      />
+      {pack ? (
+        <div className="preview-mode-switch">
+          <button
+            type="button"
+            className={mode === "orbit" ? "mode-active" : undefined}
+            onClick={() => setMode("orbit")}
+          >
+            环绕视角
+          </button>
+          <button
+            type="button"
+            className={mode === "walk" ? "mode-active" : undefined}
+            onClick={() => setMode("walk")}
+          >
+            第一视角
+          </button>
+        </div>
+      ) : null}
+      {pack && mode === "walk" ? (
+        <div className="preview-keys">
+          WASD 移动 · 空格上升 · Shift 下降 · 双击 W 冲刺 · 双击空格切飞行 · 拖动鼠标转视角
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -185,8 +312,10 @@ type Disposable = { dispose: () => void };
 /**
  * 贴图路径：三个渲染层各一个 `Mesh`，共用同一张图集纹理。
  *
- * `cutout` 用 `alphaTest` 做二值透明（树叶、铁栏杆），`translucent` 用普通
- * 混合并把 `depthWrite` 关掉，避免玻璃后面的东西被挡住。
+ * 材质用 `MeshBasicMaterial`：亮度已经算进顶点色（`voxelLight`），再叠一层
+ * three.js 的光照只会让画面跟着相机漂。`cutout` 用 `alphaTest` 做二值透明
+ * （树叶、铁栏杆），`translucent` 用普通混合并把 `depthWrite` 关掉，避免玻璃
+ * 后面的东西被挡住。
  */
 function addTexturedMeshes(
   scene: THREE.Scene,
@@ -200,38 +329,55 @@ function addTexturedMeshes(
     loaded.minFilter = THREE.NearestFilter;
     loaded.generateMipmaps = false;
     loaded.colorSpace = THREE.SRGBColorSpace;
-    // **必须关掉 flipY**：three.js 默认在上传时把图片上下翻转，让 UV 原点落在
-    // 左下；而 Minecraft 的 UV 是「v 越大越靠下」，与 PNG 的行序一致。两者
-    // 叠加会让每个面的贴图上下颠倒，看起来就是「材质全歪」。
-    loaded.flipY = false;
+    // 保持 three.js 的默认 `flipY = true`。
+    //
+    // `face_uvs` 是照 shulkr 的 `pt()` 逐字抄的，而 shulkr 从没碰过 `flipY`，
+    // 用的是 three.js 默认值。它的 UV 里 v=0 对应贴图底部（`s = 1 - o`，
+    // `o` 是模型里靠上的那一侧），正好和「上传时先上下翻图」配对。
+    //
+    // 之前这里设过 `flipY = false`（`0b067a8`），理由是「Minecraft 的 v 越大
+    // 越靠下」。但 `pt()` 已经把 v 反过来了，再关 flipY 就是翻两遍：花草、
+    // 挂着的灯笼、树苗全部上下颠倒。
     loaded.needsUpdate = true;
   });
-  // 加载完成前也要先设好，避免首帧按默认值上传。
-  texture.flipY = false;
   disposables.push(texture);
 
-  const layers: [LayerBuffers, THREE.MeshLambertMaterial][] = [
+  const layers: [LayerBuffers, THREE.MeshBasicMaterial][] = [
     [
       geometry.opaque,
-      new THREE.MeshLambertMaterial({ map: texture, side: THREE.FrontSide }),
+      new THREE.MeshBasicMaterial({
+        map: texture,
+        side: THREE.FrontSide,
+        vertexColors: true,
+      }),
     ],
     [
       geometry.cutout,
-      new THREE.MeshLambertMaterial({
+      new THREE.MeshBasicMaterial({
         map: texture,
-        side: THREE.DoubleSide,
+        // 必须只画正面，和原版一致。原版模型里有大量「位置重合、法线相反」
+        // 的一对面：十字花草的 north/south、相邻两片树叶或两块活板门的交界面。
+        // 只画正面时每个方向只看得到其中一面；`DoubleSide` 会让两面深度完全
+        // 相同地抢像素，而两面 UV 互为镜像，一旋转就闪。
+        side: THREE.FrontSide,
         alphaTest: 0.5,
         transparent: false,
+        vertexColors: true,
       }),
     ],
     [
       geometry.translucent,
-      new THREE.MeshLambertMaterial({
+      new THREE.MeshBasicMaterial({
         map: texture,
-        side: THREE.DoubleSide,
+        // **只画正面**。原来用 `DoubleSide` 是想着"玻璃能看穿到背面"，但
+        // 一个方块的正反两面深度完全相等，双面必然 z-fighting —— 视角一动就闪。
+        // 同组剔除已经去掉了内部重叠面，正面足够。
+        side: THREE.FrontSide,
         transparent: true,
-        opacity: 0.75,
+        // 不额外压透明度：贴图自带 alpha（水约 180/255、彩色玻璃约 102/255）。
+        opacity: 1,
         depthWrite: false,
+        vertexColors: true,
       }),
     ],
   ];
@@ -245,93 +391,11 @@ function addTexturedMeshes(
     buffer.setAttribute("position", new THREE.BufferAttribute(buffers.positions, 3));
     buffer.setAttribute("normal", new THREE.BufferAttribute(buffers.normals, 3));
     buffer.setAttribute("uv", new THREE.BufferAttribute(buffers.uvs, 2));
+    buffer.setAttribute("color", new THREE.BufferAttribute(buffers.tints, 3));
     buffer.computeBoundingSphere();
     scene.add(new THREE.Mesh(buffer, material));
     disposables.push(buffer, material);
   }
-}
-
-/** 资源包里没有的方块：退回纯色整方块，至少不让它们消失。 */
-function addFallbackMeshes(
-  scene: THREE.Scene,
-  detail: SchematicDetail,
-  expected: number,
-  disposables: Disposable[],
-): void {
-  const data = buildRenderData(detail, Number.MAX_SAFE_INTEGER);
-  if (data.count === 0) {
-    return;
-  }
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
-  const material = new THREE.MeshLambertMaterial();
-  const mesh = new THREE.InstancedMesh(geometry, material, data.count);
-  const matrix = new THREE.Matrix4();
-  const color = new THREE.Color();
-  const position = new THREE.Vector3();
-  const scale = new THREE.Vector3(1, 1, 1);
-  const quaternion = new THREE.Quaternion();
-  for (let index = 0; index < data.count; index += 1) {
-    position.set(
-      data.positions[index * 3],
-      data.positions[index * 3 + 1],
-      data.positions[index * 3 + 2],
-    );
-    matrix.compose(position, quaternion, scale);
-    mesh.setMatrixAt(index, matrix);
-    color.setRGB(
-      data.colors[index * 3],
-      data.colors[index * 3 + 1],
-      data.colors[index * 3 + 2],
-      THREE.SRGBColorSpace,
-    );
-    mesh.setColorAt(index, color);
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) {
-    mesh.instanceColor.needsUpdate = true;
-  }
-  mesh.visible = expected > 0;
-  scene.add(mesh);
-  disposables.push(geometry, material, mesh);
-}
-
-/** 没有资源包时的纯色路径。 */
-function addSolidMesh(
-  scene: THREE.Scene,
-  data: ReturnType<typeof buildRenderData>,
-  disposables: Disposable[],
-): void {
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
-  const material = new THREE.MeshLambertMaterial();
-  const mesh = new THREE.InstancedMesh(geometry, material, data.count);
-  const matrix = new THREE.Matrix4();
-  const color = new THREE.Color();
-  const position = new THREE.Vector3();
-  const scale = new THREE.Vector3();
-  const quaternion = new THREE.Quaternion();
-  for (let index = 0; index < data.count; index += 1) {
-    position.set(
-      data.positions[index * 3],
-      data.positions[index * 3 + 1],
-      data.positions[index * 3 + 2],
-    );
-    scale.setScalar(data.stride * 0.95);
-    matrix.compose(position, quaternion, scale);
-    mesh.setMatrixAt(index, matrix);
-    color.setRGB(
-      data.colors[index * 3],
-      data.colors[index * 3 + 1],
-      data.colors[index * 3 + 2],
-      THREE.SRGBColorSpace,
-    );
-    mesh.setColorAt(index, color);
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) {
-    mesh.instanceColor.needsUpdate = true;
-  }
-  scene.add(mesh);
-  disposables.push(geometry, material, mesh);
 }
 
 function addGrid(
@@ -416,10 +480,4 @@ function boundsOfLayers(
     offset += layer.positions.length;
   }
   return boundsOfPositions(merged);
-}
-
-/** 纯色路径的包围盒（每个体素是一个整方块，多留半格）。 */
-function boundsOfSolid(data: ReturnType<typeof buildRenderData>): SceneBounds {
-  const bounds = boundsOfPositions(data.positions);
-  return { center: bounds.center, radius: bounds.radius + 0.5 };
 }

@@ -36,6 +36,9 @@ pub use cache::{VersionJar, cache_key, list_version_jars, load_cached, store_cac
 pub use model::VariantBinding;
 pub use pack::build_atlas;
 
+/// 水面贴图的 id。含水方块要在自己的模型上叠一层这个贴图的水膜。
+const WATER_STILL: &str = "minecraft:block/water_still";
+
 /// 一个 jar 里允许读取的最大条目数，防止异常压缩包拖住解析。
 const MAX_ENTRIES: usize = 40_000;
 
@@ -126,19 +129,35 @@ pub fn build_asset_pack(jar: &Path, version_label: &str) -> Result<AssetPack, Pa
 
     let mut blocks = model::bake_all(&raw);
 
-    // 图集只需要被模型引用到的贴图。
-    let referenced = model::referenced_textures(&blocks);
-    let (atlas_png, atlas, atlas_size) = build_atlas(&raw.textures, &referenced);
+    // 图集只需要被模型引用到的贴图，外加一张水面贴图。
+    //
+    // 为什么要额外加水：含水方块（`waterlogged=true` 的楼梯、台阶、栅栏，
+    // 以及海带、海草）在原版里除了自己的模型，还会叠一层流体。那层水用的
+    // `water_still` 不一定被任何方块模型引用，不显式加进来就取不到 UV。
+    let mut referenced = model::referenced_textures(&blocks);
+    referenced.insert(WATER_STILL.to_owned());
+    let built = build_atlas(&raw.textures, &referenced);
 
+    // 按**贴图是否带透明像素**修正渲染层。
+    //
+    // 之前是按方块名列表猜（`glass`、`leaves`……），漏掉的方块（草、花、
+    // 花瓣、模组方块）就被当成不透明，贴图里的透明背景直接画成黑色 ——
+    // 画面上就是一片黑底卡片。贴图里有没有 alpha 是确定的事实，按它判断
+    // 不需要维护任何名单。
+    model::assign_layers_from_textures(&mut blocks, &built.transparent, &built.blended);
+
+    // 带 `tintindex` 的面要乘对应颜色。树叶、草、水是三个不同的颜色，
+    // 统一用草色会让樱花树叶变成灰绿。
+    model::assign_tints(&mut blocks);
     // 烘焙阶段只知道贴图在图里的局部 UV；建好图集后补上格子偏移。
-    model::apply_atlas_slots(&mut blocks, &atlas);
+    model::apply_atlas_slots(&mut blocks, &built.slots);
 
     Ok(AssetPack {
         source_version: version_label.to_owned(),
         blocks,
-        atlas_png,
-        atlas,
-        atlas_size,
+        atlas_png: built.png,
+        atlas: built.slots,
+        atlas_size: built.side,
     })
 }
 
@@ -381,6 +400,55 @@ mod tests {
         }
         assert!(checked > 0, "no quads to check");
     }
+
+    /// UV 的 v 方向必须和 shulkr 的 `pt()` 一致：**同一个面的第一个顶点
+    /// （视觉上的上方）拿到较大的 v**。
+    ///
+    /// 渲染端保持 three.js 默认的 `flipY = true`（上传时把图上下翻），所以
+    /// 这里的 v 是「从贴图底部往上数」。两边必须配对：把 `face_uvs` 里的
+    /// `s = 1 - o` 改成 `s = o`，或者渲染端再关一次 `flipY`，花草和挂灯
+    /// 就会整体倒过来 —— 这个测试就是钉住这件事。
+    #[test]
+    fn uv_v_grows_towards_the_visual_bottom() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = build_asset_pack(std::path::Path::new(&jar), "test").expect("extract");
+
+        // 只看由 `from`/`to` 推导出来的 UV。模型里显式写了 `uv` 的（活板门、
+        // 栅栏门）就是原版素材自己的朝向，可能故意倒着贴，不能拿来断言。
+        //
+        // 用一个全格立方体做样本：`minecraft:stone` 这类基础方块的六个面都
+        // 没有显式 uv，且都是满 UV，方向一定来自 `pt()` 的推导。
+        let Some(bindings) = pack.blocks.get("minecraft:stone") else {
+            return;
+        };
+        let mut checked = 0;
+        for binding in bindings {
+            for quad in &binding.model.quads {
+                // 只看竖直面（north/south/west/east）：上下两端的 y 不同。
+                if quad.positions[0][1] == quad.positions[1][1] {
+                    continue;
+                }
+                let low = if quad.positions[0][1] < quad.positions[1][1] {
+                    0
+                } else {
+                    1
+                };
+                let high = 1 - low;
+                let v_low = quad.uvs[low][1];
+                let v_high = quad.uvs[high][1];
+                assert!(
+                    v_low < v_high,
+                    "v is upside down: bottom y={} has v={v_low}, top y={} has v={v_high}",
+                    quad.positions[low][1],
+                    quad.positions[high][1],
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no vertical quads to check");
+    }
 }
 
 #[cfg(test)]
@@ -495,5 +563,114 @@ mod probe {
         }
         println!("tilted quads: {tilted}/{}", bindings[0].model.quads.len());
         assert!(tilted > 0, "the cross model was not rotated");
+    }
+
+    /// 楼梯的 multipart 条件必须带出来，否则每个变体都会被画一遍。
+    ///
+    /// `oak_stairs` 的 blockstate 是 multipart：`facing`/`half`/`shape` 组合出
+    /// 直梯、内转角、外转角等十几个部件。条件丢掉时画面就是「所有楼梯都是
+    /// 转角楼梯」。
+    #[test]
+    fn stairs_keep_their_multipart_conditions() {
+        let Some(jar) = std::env::var_os("AETHER_TEST_JAR") else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        let Some(bindings) = pack.blocks.get("minecraft:oak_stairs") else {
+            println!("oak_stairs not baked");
+            return;
+        };
+
+        let conditional = bindings.iter().filter(|b| !b.when.is_empty()).count();
+        let straight = bindings
+            .iter()
+            .filter(|b| {
+                b.when
+                    .iter()
+                    .any(|(key, value)| key == "shape" && value == "straight")
+            })
+            .count();
+        println!(
+            "oak_stairs bindings={} conditional={conditional} straight={straight}",
+            bindings.len()
+        );
+
+        assert!(
+            conditional > 0,
+            "multipart 条件被丢掉了，楼梯会画出所有变体"
+        );
+        assert!(straight > 0, "没有直梯部件，只剩转角");
+    }
+
+    /// 对比一个真实投影用到的方块和材质包能提供的方块，打印对不上的那些。
+    ///
+    /// 用 `AETHER_TEST_SCHEMATIC` 指定投影、`AETHER_TEST_JAR` 指定材质 jar。
+    #[test]
+    fn report_blocks_the_pack_cannot_texture() {
+        let (Some(jar), Some(schematic)) = (
+            std::env::var_os("AETHER_TEST_JAR"),
+            std::env::var_os("AETHER_TEST_SCHEMATIC"),
+        ) else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        let bytes = std::fs::read(&schematic).expect("read schematic");
+        let parsed = aether_schematic::parse(&bytes).expect("parse schematic");
+
+        let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for region in &parsed.regions {
+            for entry in &region.palette {
+                let name = entry.split('[').next().unwrap_or(entry).trim();
+                if name.is_empty() || name.ends_with(":air") || name == "minecraft:air" {
+                    continue;
+                }
+                used.insert(name.to_owned());
+            }
+        }
+
+        let mut missing: Vec<&String> = used
+            .iter()
+            .filter(|name| !pack.blocks.contains_key(*name))
+            .collect();
+        missing.sort();
+        println!(
+            "project_blocks={} pack_blocks={} missing={}",
+            used.len(),
+            pack.blocks.len(),
+            missing.len()
+        );
+        for name in missing.iter().take(200) {
+            println!("  missing: {name}");
+        }
+    }
+
+    /// 直接看一眼某个方块有没有被烘焙出来，以及它的面去了哪一层。
+    #[test]
+    fn report_one_block() {
+        let (Some(jar), name) = (
+            std::env::var_os("AETHER_TEST_JAR"),
+            std::env::var("AETHER_TEST_BLOCK").unwrap_or_else(|_| "minecraft:glass".to_owned()),
+        ) else {
+            return;
+        };
+        let pack = super::build_asset_pack(std::path::Path::new(&jar), "probe").expect("extract");
+        match pack.blocks.get(&name) {
+            Some(bindings) => {
+                println!("{name}: bindings={}", bindings.len());
+                for binding in bindings.iter().take(3) {
+                    println!(
+                        "  when={:?} rot=({},{}) quads={}",
+                        binding.when,
+                        binding.rotation_x,
+                        binding.rotation_y,
+                        binding.model.quads.len()
+                    );
+                    for quad in binding.model.quads.iter().take(2) {
+                        println!("    layer={:?} tex={:?}", quad.layer, quad.uv);
+                    }
+                }
+            }
+            None => println!("{name}: NOT BAKED"),
+        }
     }
 }
