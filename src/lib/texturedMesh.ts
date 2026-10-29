@@ -1,5 +1,26 @@
 import type { AssetPack, AssetQuad, AssetVariant, SchematicDetail } from "../ipc";
 import { isAir } from "./blockColors";
+import {
+  aoShades,
+  faceOfNormal,
+  shouldFlipDiagonal,
+  voxelKey,
+  type FaceName,
+  type VoxelBox,
+  type VoxelMap,
+} from "./voxelLight";
+import { isWaterlogged, pushWaterFilm } from "./waterFilm";
+
+/** 面名 → 邻居格的世界坐标偏移。剔除时用来找「面外侧那一格」。 */
+const FACE_OFFSET: Record<string, [number, number, number]> = {
+  down: [0, -1, 0],
+  up: [0, 1, 0],
+  north: [0, 0, -1],
+  south: [0, 0, 1],
+  west: [-1, 0, 0],
+  east: [1, 0, 0],
+};
+
 
 /**
  * 把「投影里的方块」和「从 jar 提取的方块模型」合成可直接喂给 Three 的几何。
@@ -20,17 +41,17 @@ export type LayeredGeometry = {
   opaque: LayerBuffers;
   cutout: LayerBuffers;
   translucent: LayerBuffers;
-  /** 没有资源包、或方块不在资源包里时，用来回退成纯色的方块位置与颜色。 */
-  fallback: {
-    positions: Float32Array;
-    colors: Float32Array;
-    count: number;
-    stride: number;
-  };
   /** 实际画出的四边形数，用于界面提示。 */
   quadCount: number;
-  /** 有多少方块因为资源包里没有它而回退成纯色。 */
+  /**
+   * 有多少方块在资源包里找不到模型。
+   *
+   * 这些方块**不画**（以前会退回成一个纯色立方体，位置和真实模型差半格，
+   * 反而让画面看起来错位）。数量只用于界面提示「材质不完整」。
+   */
   missingBlocks: number;
+  /** 体素表：每格是否挡光、是否挡人。第一视角用它做碰撞。 */
+  voxels: VoxelMap;
 };
 
 /** 一个渲染层的顶点缓冲。 */
@@ -38,6 +59,8 @@ export type LayerBuffers = {
   positions: Float32Array;
   normals: Float32Array;
   uvs: Float32Array;
+  /** 顶点色，RGB 三份。草和树叶靠它乘上群系色，其余全是 1。 */
+  tints: Float32Array;
   /** 每个顶点三份（三角形索引会展开）。 */
   count: number;
 };
@@ -46,6 +69,7 @@ const EMPTY_LAYER: LayerBuffers = {
   positions: new Float32Array(0),
   normals: new Float32Array(0),
   uvs: new Float32Array(0),
+  tints: new Float32Array(0),
   count: 0,
 };
 
@@ -76,59 +100,127 @@ export function buildTexturedGeometry(
       opaque: EMPTY_LAYER,
       cutout: EMPTY_LAYER,
       translucent: EMPTY_LAYER,
-      fallback: emptyFallback(),
       quadCount: 0,
       missingBlocks: 0,
+      voxels: new Map(),
     };
   }
 
-  // 先把体素收集起来，同时建一张坐标 → 方块 的表用于邻居查询（面剔除）。
+  //
+  // 只有**不透明整方块**才能挡住邻居的面。判据来自模型数据本身：模型填满
+  // 1×1×1（`fullCube`）且所有面都在不透明层。玻璃、树叶、台阶、楼梯的
+  // `fullCube` 是假，草和树叶的面在 cutout 层，两者都不算遮挡。
+  //
+  // 不要用方块名列表判断：模组方块和没收录的原版方块会被误判成遮挡，
+  // 结果是墙上凭空挖洞。
   const voxels = collectVoxels(detail);
-  const occupied = new Set<string>();
-  for (const voxel of voxels) {
-    occupied.add(key(voxel.x, voxel.y, voxel.z));
-  }
+  const variantCache = new Map<string, AssetVariant[]>();
+  const variantsFor = (voxel: Voxel): AssetVariant[] => {
+    const stateKey = `${voxel.block}|${stateSignature(voxel.state)}`;
+    let variants = variantCache.get(stateKey);
+    if (variants === undefined) {
+      variants = pickVariants(pack, voxel.block, voxel.state);
+      variantCache.set(stateKey, variants);
+    }
+    return variants;
+  };
 
+  // 剔除只做两档，判据从简：实心满方块挡住任何邻居；同种方块互挡只限整方块。
+  //
+  // 原版的 `shouldRenderFace` 依赖完整的 `BlockState` 形状数据，我们的模型烘焙
+  // 只有 `fullCube` 一个布尔量，仍不足以复刻。剔除是纯性能优化，代价是「判错
+  // 一次就挖一个洞」，所以宁可少剔：楼梯、台阶、栅栏、石英柱这些非整方块一律
+  // 不按 id 互剔，缺面的观感远差于多画几个面。
+  //
+  // 两个满立方体相邻时被剔掉的那两面本来就完全重合、肉眼看不出差别，所以这一
+  // 档是安全的。剩下的脏活留给 `maxQuads`。
+  //
+  // 光照：只做逐顶点 AO，不做天空光 —— 和 shulkr 的 meshWorker 一致。
+  const lightVoxels = collectLightVoxels(voxels, variantsFor);
+  // 位置 → 方块 id。剔除「同一种方块相邻」时要比 id，光照表里只有布尔量。
+  const blockAt = new Map<string, string>();
+  for (const item of voxels) {
+    blockAt.set(voxelKey(item.x, item.y, item.z), item.block);
+  }
+  const isSolid = (x: number, y: number, z: number): boolean =>
+    lightVoxels.get(voxelKey(x, y, z))?.solid === true;
   const opaque: number[] = [];
   const cutout: number[] = [];
   const translucent: number[] = [];
-  const fallbackPositions: number[] = [];
-  const fallbackColors: number[] = [];
   let quadCount = 0;
   let missingBlocks = 0;
-
-  // 按方块名缓存「这次用了哪个 variant」，同一个方块状态只挑一次。
-  const variantCache = new Map<string, AssetVariant | null>();
-
   for (const voxel of voxels) {
-    const stateKey = `${voxel.block}|${stateSignature(voxel.state)}`;
-    let variant = variantCache.get(stateKey);
-    if (variant === undefined) {
-      variant = pickVariant(pack, voxel.block, voxel.state);
-      variantCache.set(stateKey, variant);
-    }
-    if (!variant) {
+    const variants = variantsFor(voxel);
+    if (variants.length === 0) {
       missingBlocks += 1;
-      fallbackPositions.push(voxel.x, voxel.y, voxel.z);
       continue;
     }
-
-    for (const quad of variant.model.quads) {
-      if (quad.cullface && isCulled(occupied, voxel, quad.cullface)) {
-        continue;
+    for (const variant of variants) {
+      for (const quad of variant.model.quads) {
+        // 超过上限就停：继续画只会把页面拖死，前面已画的部分仍然可看。
+        if (quadCount >= maxQuads) {
+          continue;
+        }
+        // 剔除：面外侧那一格被占住时，这面对外看不见，整面跳过。
+        //
+        // **方向必须换成世界方向**。`quad.cullface` 是模型里的朝向，而
+        // variant 的 `x`/`y` 旋转会把它转到别处：横放的石英柱（`axis=x`，
+        // `x:90,y:90`）模型的 west 面转完朝世界 north。拿原始方向去查邻居，
+        // 查的是同排下一根柱子 → 同种方块互剔 → 南北两个侧面全没了。
+        //
+        // 判据照 shulkr 的 `_ = N(neighbour) || (group && sameGroup(neighbour))`：
+        // - 实心满方块挡住**任何**邻居；
+        // - 同种方块互挡**只对整方块成立**。楼梯、半砖朝向不同或上下叠放时
+        //   接触面形状并不一致，按 id 剔除会开洞。玻璃、树叶是整方块，
+        //   这条对它们仍然有效。
+        if (quad.cullface) {
+          const face = worldFace(quad.cullface as FaceName, variant);
+          const [dx, dy, dz] = FACE_OFFSET[face] ?? [0, 0, 0];
+          const nx = voxel.x + dx;
+          const ny = voxel.y + dy;
+          const nz = voxel.z + dz;
+          const neighbour = lightVoxels.get(voxelKey(nx, ny, nz));
+          if (neighbour) {
+            const neighbourBlock = blockAt.get(voxelKey(nx, ny, nz));
+            const sameFullCube =
+              variant.model.fullCube && neighbourBlock === voxel.block;
+            if (neighbour.solid || sameFullCube) {
+              continue;
+            }
+          }
+        }
+        quadCount += 1;
+        const target =
+          quad.layer === "translucent"
+            ? translucent
+            : quad.layer === "cutout"
+              ? cutout
+              : opaque;
+        const shades = aoShades(
+          faceOfQuad(quad, variant),
+          quad.positions,
+          voxel.x,
+          voxel.y,
+          voxel.z,
+          isSolid,
+        );
+        pushQuad(target, voxel, variant, quad, shades);
       }
-      // 超过上限就停：继续画只会把页面拖死，前面已画的部分仍然可看。
-      if (quadCount >= maxQuads) {
-        continue;
-      }
-      quadCount += 1;
-      const target =
-        quad.layer === "translucent"
-          ? translucent
-          : quad.layer === "cutout"
-            ? cutout
-            : opaque;
-      pushQuad(target, voxel, variant, quad);
+    }
+    // 含水方块额外叠一层水膜（楼梯、台阶、栅栏的 `waterlogged=true`）。
+    if (isWaterlogged(voxel.block, voxel.state)) {
+      quadCount += pushWaterFilm(
+        translucent,
+        {
+          x: voxel.x,
+          y: voxel.y,
+          z: voxel.z,
+          isSolid,
+          voxels: lightVoxels,
+          budget: maxQuads - quadCount,
+        },
+        pack.atlas,
+      );
     }
   }
 
@@ -136,16 +228,124 @@ export function buildTexturedGeometry(
     opaque: toLayer(opaque),
     cutout: toLayer(cutout),
     translucent: toLayer(translucent),
-    fallback: {
-      positions: new Float32Array(fallbackPositions),
-      colors: new Float32Array(fallbackColors),
-      count: fallbackPositions.length / 3,
-      stride: 1,
-    },
     quadCount,
     missingBlocks,
+    voxels: lightVoxels,
   };
 }
+/**
+ * 从方块列表建光照用的体素表。
+ *
+ * 「实心」= 模型填满整格（`fullCube`）且所有面都在 opaque 层。和渲染分层
+ * 用的是同一份判据：光照和遮挡不能各判一套，否则会出现「画得出来但一片死黑」
+ * 或者「明明实心却透光」。
+ *
+ * 玻璃、树叶是满立方体但带透明像素，判为半透 —— 光会衰减但不完全阻断。
+ */
+function collectLightVoxels(
+  voxels: Voxel[],
+  variantsFor: (voxel: Voxel) => AssetVariant[],
+): VoxelMap {
+  const map: VoxelMap = new Map();
+  for (const voxel of voxels) {
+    const variants = variantsFor(voxel);
+    if (variants.length === 0) {
+      continue;
+    }
+    const fullCube = variants.every((variant) => variant.model.fullCube);
+    const allOpaque = variants.every((variant) =>
+      variant.model.quads.every((quad) => quad.layer === "opaque"),
+    );
+    // 碰撞盒 = 模型所有面顶点合的 AABB。不能只看单个面 —— 整方块的面是
+    // 零厚度的，按「单个面三轴都有跨度」判会让石头都不挡人。
+    //
+    // 也不能只判「有没有体积」然后当整格：地毯、压力板只有 1/16 高，
+    // 整格碰撞会让人在它们前面被挡住（原版能直接踩上去）。
+    //
+    // 花草那种十字面片：所有顶点落在同一竖直平面里，AABB 在某一轴上是
+    // 零厚度 → 不产生碰撞盒，和原版一致。
+    const collision: VoxelBox[] = [];
+    for (const variant of variants) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let minZ = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let maxZ = -Infinity;
+      for (const quad of variant.model.quads) {
+        for (const position of quad.positions) {
+          const rotated = rotate(
+            position,
+            variant.rotationX,
+            variant.rotationY,
+          );
+          minX = Math.min(minX, rotated[0]);
+          minY = Math.min(minY, rotated[1]);
+          minZ = Math.min(minZ, rotated[2]);
+          maxX = Math.max(maxX, rotated[0]);
+          maxY = Math.max(maxY, rotated[1]);
+          maxZ = Math.max(maxZ, rotated[2]);
+        }
+      }
+      if (!Number.isFinite(minX)) {
+        continue;
+      }
+      // 三个轴都要有跨度才算有体积。细到 1/16 的薄片仍然算（地毯能站人）。
+      if (
+        maxX - minX <= 1e-6 ||
+        maxY - minY <= 1e-6 ||
+        maxZ - minZ <= 1e-6
+      ) {
+        continue;
+      }
+      collision.push({
+        min: [minX, minY, minZ],
+        max: [maxX, maxY, maxZ],
+      });
+    }
+    map.set(voxelKey(voxel.x, voxel.y, voxel.z), {
+      solid: fullCube && allOpaque,
+      collision,
+    });
+  }
+  return map;
+}
+
+/**
+ * 模型里的面方向，套上 variant 的 `x`/`y` 旋转后变成**世界方向**。
+ *
+ * 剔除和 AO 都必须要世界方向。模型的 `cullface` 是「模型坐标系里的朝向」，
+ * variant 一旋转它就跟着转：横放的石英柱（`axis=x`，`x:90,y:90`）模型的
+ * west 面转完朝世界 north。拿模型方向去查邻居，查的永远是错的格子。
+ */
+function worldFace(face: FaceName, variant: AssetVariant): FaceName {
+  const offset = FACE_OFFSET[face];
+  if (offset === undefined) {
+    return face;
+  }
+  const [x, y, z] = rotate(offset, variant.rotationX, variant.rotationY, true);
+  return faceOfNormal(x, y, z);
+}
+
+/**
+ * 一个四边形属于哪个面（世界方向，AO 采样用）。
+ *
+ * `cullface` 有值就转成世界方向；十字花草这类没有 `cullface`，只能看法线
+ * （法线本来就会被 `rotate` 转好）。
+ */
+function faceOfQuad(quad: AssetQuad, variant: AssetVariant): FaceName {
+  if (quad.cullface) {
+    return worldFace(quad.cullface as FaceName, variant);
+  }
+  const [nx, ny, nz] = rotate(
+    quad.normal,
+    variant.rotationX,
+    variant.rotationY,
+    true,
+  );
+  return faceOfNormal(nx, ny, nz);
+}
+
 
 /** 收集投影里的所有非空气方块。 */
 function collectVoxels(detail: SchematicDetail): Voxel[] {
@@ -208,67 +408,60 @@ export function parsePaletteEntry(entry: string): {
 }
 
 /**
- * 从方块的 variant 列表里挑一个匹配当前属性的。
+ * 从方块的 variant 列表里挑出当前属性命中的全部变体。
  *
- * 优先选「属性完全匹配」的；都不完全匹配时，选匹配项最多的那个 —— 比随便
- * 取第一个更接近真实形状（比如 `facing=north` 的楼梯方向是对的）。
+ * 为什么是「全部」而不是「一个」：blockstate 有两种写法。
+ * - `variants`（工作台、石头）每个属性组合对应**一个**模型，正常情况下只有一条命中；
+ * - `multipart`（楼梯、栅栏、玻璃板）由多个**可以同时叠加**的部件组成，
+ *   比如楼梯的 `bottom+straight+north` 命中底座和踏板两个部件。
+ *   只取一个的话，楼梯只剩半截，或者叠成转角楼梯。
+ * 筛选规则（照 shulkr 的 `Be()` / `ze()`）：
+ * - blockstate 是 `variants` 写法（`exclusive: true`）：每个属性组合对应**一个**
+ *   模型。命中多条时只取条件最多（最精确）的一条。`cherry_shelf` 同时有
+ *   「无条件 facing」和「facing + powered + side_chain」两套，全取会叠在一起。
+ * - blockstate 是 `multipart` 写法（`exclusive: false`）：部件可以叠加，全取。
+ * - `when` 里每一条都必须命中；值可以写成 `"north|east"` 表示任一。
+ * - `when` 为空表示「总是适用」。
  */
-export function pickVariant(
+export function pickVariants(
   pack: AssetPack,
   block: string,
   state: Record<string, string>,
-): AssetVariant | null {
+): AssetVariant[] {
   const variants = pack.blocks[block];
   if (!variants || variants.length === 0) {
-    return null;
+    return [];
   }
-  let best: AssetVariant | null = null;
-  let bestScore = -1;
-  for (const variant of variants) {
-    let score = 0;
-    let ok = true;
-    for (const [name, value] of variant.when) {
-      if (state[name] !== value) {
-        ok = false;
-        break;
+
+  const matches = (variant: AssetVariant): boolean =>
+    variant.when.every(([name, wanted]) => {
+      const actual = state[name];
+      if (actual === undefined) {
+        return false;
       }
-      score += 1;
+      return wanted.split("|").includes(actual);
+    });
+
+  const matched = variants.filter(matches);
+  if (matched.length > 0) {
+    // `variants` 写法只取最精确的一条；`multipart` 全部保留（部件叠加）。
+    const exclusive = matched.filter((variant) => variant.exclusive);
+    if (exclusive.length === 0) {
+      return matched;
     }
-    if (!ok) {
-      continue;
-    }
-    // 属性全匹配且条目数最多者优先；`when` 为空表示「总是适用」，作为兜底。
-    if (score > bestScore) {
-      best = variant;
-      bestScore = score;
-    } else if (score === bestScore && best && variant.when.length === 0) {
-      best = variant;
-    }
+    return [
+      exclusive.reduce((best, variant) =>
+        variant.when.length > best.when.length ? variant : best,
+      ),
+    ];
   }
-  return best ?? variants[0] ?? null;
-}
 
-/** 邻居占住 `face` 方向时，这个面可以整面跳过。 */
-function isCulled(
-  occupied: Set<string>,
-  voxel: Voxel,
-  face: string,
-): boolean {
-  const [dx, dy, dz] = FACE_OFFSET[face] ?? [0, 0, 0];
-  return occupied.has(key(voxel.x + dx, voxel.y + dy, voxel.z + dz));
-}
-
-const FACE_OFFSET: Record<string, [number, number, number]> = {
-  down: [0, -1, 0],
-  up: [0, 1, 0],
-  north: [0, 0, -1],
-  south: [0, 0, 1],
-  west: [-1, 0, 0],
-  east: [1, 0, 0],
-};
-
-function key(x: number, y: number, z: number): string {
-  return `${x},${y},${z}`;
+  // 属性不全（老投影没写 Properties）时才走到这里：取条件最少的那条，
+  // 至少让方块画得出来，形状可能不对但不会整块消失。
+  const fallback = variants.reduce((fewest, variant) =>
+    variant.when.length < fewest.when.length ? variant : fewest,
+  );
+  return [fallback];
 }
 
 function stateSignature(state: Record<string, string>): string {
@@ -280,21 +473,29 @@ function stateSignature(state: Record<string, string>): string {
 
 /**
  * 把一个四边形推进缓冲，套上 variant 的旋转并平移到体素位置。
- *
- * 三角形拆分用固定的 (0,1,2) (0,2,3) 顺序，与 `face_corners` 的逆时针一致。
  */
 function pushQuad(
   target: number[],
   voxel: Voxel,
   variant: AssetVariant,
   quad: AssetQuad,
+  shades: [number, number, number, number],
 ): void {
   const rotated = quad.positions.map((position) =>
     rotate(position, variant.rotationX, variant.rotationY),
   );
   const normals = rotate(quad.normal, variant.rotationX, variant.rotationY, true);
 
-  for (const index of [0, 1, 2, 0, 2, 3]) {
+  // 三角形拆分方向要按 AO 决定，不能固定 (0,1,2)(0,2,3)。
+  //
+  // 一个四边形切两刀有两种切法，对角线不同。如果对角线两端亮度差很多，
+  // 亮度就会沿对角线出现一条生硬的折痕 —— 地砖上那种「到处都有阴影」的
+  // 细碎纹路就是它。shulkr 的 `sn()` 在这里判断：
+  // `ao0 + ao2 < ao1 + ao3` 时换成另一条对角线。
+  const flip = shouldFlipDiagonal(shades);
+  const ORDER = flip ? [1, 2, 3, 1, 3, 0] : [0, 1, 2, 0, 2, 3];
+
+  for (const index of ORDER) {
     const position = rotated[index];
     target.push(
       voxel.x + position[0],
@@ -303,6 +504,13 @@ function pushQuad(
     );
     target.push(normals[0], normals[1], normals[2]);
     target.push(quad.uvs[index][0], quad.uvs[index][1]);
+    // 顶点色 = 方块染色 × AO 亮度，**不做色彩空间转换**，和 shulkr 一致。
+    //
+    // `quad.tint` 和 `shade` 都是 0..1 的直接乘数，渲染器那边让顶点色和贴图
+    // 处在同一空间（见 `SchematicPreview` 的 `outputColorSpace`），观感才对得上。
+    const tint = quad.tint ?? [1, 1, 1];
+    const shade = shades[index] ?? 1;
+    target.push(tint[0] * shade, tint[1] * shade, tint[2] * shade);
   }
 }
 
@@ -358,12 +566,13 @@ function rotate(
 
 /** `[px,py,pz, nx,ny,nz, u,v] × 6` → 三份独立缓冲。 */
 function toLayer(values: number[]): LayerBuffers {
-  const count = values.length / 8;
+  const count = values.length / 11;
   const positions = new Float32Array(count * 3);
   const normals = new Float32Array(count * 3);
   const uvs = new Float32Array(count * 2);
+  const tints = new Float32Array(count * 3);
   for (let index = 0; index < count; index += 1) {
-    const base = index * 8;
+    const base = index * 11;
     positions[index * 3] = values[base];
     positions[index * 3 + 1] = values[base + 1];
     positions[index * 3 + 2] = values[base + 2];
@@ -372,15 +581,9 @@ function toLayer(values: number[]): LayerBuffers {
     normals[index * 3 + 2] = values[base + 5];
     uvs[index * 2] = values[base + 6];
     uvs[index * 2 + 1] = values[base + 7];
+    tints[index * 3] = values[base + 8];
+    tints[index * 3 + 1] = values[base + 9];
+    tints[index * 3 + 2] = values[base + 10];
   }
-  return { positions, normals, uvs, count };
-}
-
-function emptyFallback() {
-  return {
-    positions: new Float32Array(0),
-    colors: new Float32Array(0),
-    count: 0,
-    stride: 1,
-  };
+  return { positions, normals, uvs, tints, count };
 }
