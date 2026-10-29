@@ -11,9 +11,8 @@ const page: PageDefinition = {
   id: "schematics",
   label: "投影图",
   icon: <span />,
+  activeIcon: <span />,
   summary: "Litematica 投影文件的 3D 预览与跨版本管理",
-  pendingTitle: "",
-  pendingBody: "",
 };
 
 const SURVIVAL = "11111111-1111-4111-8111-111111111111";
@@ -109,24 +108,18 @@ function instanceListing(): InstanceListing {
         name: "生存 1.21",
         version: "1.21.1",
         state: "ready",
-        category: "vanilla",
-        gameDirectory: null,
       },
       {
         id: REDSTONE,
         name: "红石实验",
         version: "1.20.1",
         state: "ready",
-        category: "vanilla",
-        gameDirectory: null,
       },
       {
         id: "33333333-3333-4333-8333-333333333333",
         name: "空版本",
         version: "1.19.2",
         state: "ready",
-        category: "vanilla",
-        gameDirectory: null,
       },
     ],
     skipped: [],

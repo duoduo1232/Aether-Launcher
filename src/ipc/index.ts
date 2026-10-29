@@ -49,18 +49,9 @@ export function listJavaRuntimes(): Promise<JavaRuntimeInfo[]> {
 // 带参数的命令封装与错误描述
 export { callCommand, describeCommandError } from "./call";
 
-// 实例列表与创建
-export {
-  emptyInstanceListing,
-  createInstance,
-  deleteInstance,
-  listInstances,
-  setGameDirectoryForAllInstances,
-} from "./instances";
+// 实例列表（实例由安装流程创建）
+export { emptyInstanceListing, listInstances } from "./instances";
 export type {
-  CreateInstanceInput,
-  GameDirectoryReport,
-  InstanceCategory,
   InstanceListing,
   InstanceState,
   InstanceSummary,
@@ -71,11 +62,13 @@ export type {
 export {
   detectLauncherInstallations,
   importVersions,
+  listenImportItem,
   pickImportFolder,
   pickLauncherFolder,
 } from "./import";
 export type {
   ImportCandidate,
+  ImportItemProgress,
   ImportResult,
   ImportSkipped,
   ImportSource,
@@ -84,20 +77,46 @@ export type {
 } from "./import";
 
 // 官方 Minecraft 版本目录（只读）
-export {
-  listMinecraftVersions,
-  cacheVanillaVersionManifest,
-  installVanillaClientLibraries,
-} from "./catalog";
+export { listMinecraftVersions } from "./catalog";
 export type { MinecraftCatalogVersion, MinecraftVersionCatalog } from "./catalog";
+
+// 一键安装：命令与进度事件
+export {
+  cancelVanillaInstall,
+  installProgressEvent,
+  isInstallCancelled,
+  listenInstallProgress,
+  startVanillaInstall,
+} from "./install";
+export type { InstallProgress, InstallStage } from "./install";
+
+// 本机内存（只读）
+export { getSystemMemory } from "./system";
+export type { SystemMemory } from "./system";
 
 // Java 运行时发现
 export { discoverJavaRuntimes } from "./java";
 export type { JavaRuntimeInfo } from "./java";
 
 // 微软账户登录
-export { describeLoginStatus, startMicrosoftLogin } from "./accounts";
-export type { MicrosoftLoginStatus } from "./accounts";
+export {
+  beginMicrosoftLogin,
+  cancelMicrosoftLogin,
+  describeLoginFailure,
+  describeMicrosoftError,
+  isMicrosoftLoginAvailable,
+  listenLoginStatus,
+  listMicrosoftAccounts,
+  openMicrosoftVerificationPage,
+  removeMicrosoftAccount,
+} from "./accounts";
+export type {
+  DeviceCodeInfo,
+  LoginEvent,
+  LoginFailure,
+  LoginFailureReason,
+  MicrosoftAccount,
+} from "./accounts";
 
 // 投影图（.litematic）管理
 export {
@@ -126,14 +145,6 @@ export type {
   SchematicSummary,
 } from "./schematics";
 
-// Installed game lifecycle (offline only; no arbitrary executable or paths)
-export {
-  activateInstalledInstance,
-  startInstalledInstance,
-  stopInstalledInstance,
-} from "./launch";
-export type { GameRunStatus } from "./launch";
-
 export {
   assetPackStatus,
   listAssetPackCandidates,
@@ -146,3 +157,16 @@ export type {
   AssetVariant,
   AtlasSlot,
 } from "./assetPack";
+
+// Installed game lifecycle (no arbitrary executable or paths)
+export { gameStatus, startInstalledInstance, stopInstalledInstance } from "./launch";
+export type { GameRunStatus } from "./launch";
+
+// 无边框窗口的控制
+export {
+  closeWindow,
+  minimizeWindow,
+  setWindowTheme,
+  toggleMaximizeWindow,
+  watchMaximized,
+} from "./window";

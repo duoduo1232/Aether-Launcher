@@ -76,29 +76,46 @@ async fn list_java_runtimes(
     .map_err(|error| format!("Java discovery task failed: {error}"))
 }
 
+/// A read-only IPC command: installed and available physical memory, so the
+/// settings page can size the game's heap against the real machine. It takes
+/// no input; `None` means the platform did not report memory.
+#[tauri::command]
+async fn system_memory() -> Option<aether_runtime::memory::SystemMemory> {
+    tauri::async_runtime::spawn_blocking(aether_runtime::memory::system_memory)
+        .await
+        .ok()
+        .flatten()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::launch::LaunchState::default())
+        .manage(commands::install::InstallState::default())
         .manage(commands::import::ImportState::default())
+        .manage(commands::microsoft::MicrosoftLoginState::default())
         .invoke_handler(tauri::generate_handler![
             application_info,
             list_java_runtimes,
+            system_memory,
             commands::catalog::list_minecraft_versions,
-            commands::vanilla::cache_vanilla_version_manifest,
-            commands::install::install_vanilla_client_libraries,
+            commands::install::install_vanilla_version,
+            commands::install::cancel_vanilla_install,
             commands::instances::list_instances,
-            commands::instances::create_instance,
-            commands::instances::set_game_directory_for_all_instances,
-            commands::instances::delete_instance,
+            commands::launch::start_installed_instance,
+            commands::launch::stop_installed_instance,
+            commands::launch::game_status,
             commands::import::pick_import_folder,
             commands::import::detect_launcher_installations,
             commands::import::pick_launcher_folder,
             commands::import::import_versions,
-            commands::launch::activate_installed_instance,
-            commands::launch::start_installed_instance,
-            commands::launch::stop_installed_instance,
+            commands::microsoft::microsoft_login_available,
+            commands::microsoft::begin_microsoft_login,
+            commands::microsoft::cancel_microsoft_login,
+            commands::microsoft::open_microsoft_verification_page,
+            commands::microsoft::list_microsoft_accounts,
+            commands::microsoft::remove_microsoft_account,
             commands::schematics::list_schematics,
             commands::schematics::read_schematic,
             commands::schematics::import_schematic,

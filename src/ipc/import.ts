@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { callCommand } from "./call";
 import { isTauri } from "./index";
 import type { InstanceSummary } from "./instances";
@@ -12,7 +14,10 @@ import type { InstanceSummary } from "./instances";
  *   Prism Launcher / MultiMC，并读取各自配置里记录的游戏目录或实例。
  * - `pick_launcher_folder` 让用户手动指定启动器目录或 `.minecraft` 目录，用于
  *   自动查找失败的情况。
- * - `import_versions` 只接收预览返回的 `token` 和用户勾选的条目 ID。
+ * - `import_versions` 只接收预览返回的 `token` 和用户勾选的条目 ID。每个版本都按
+ *   官方清单安装到启动器自己的游戏目录，来源文件夹只作为只读的"种子"：哈希一致的
+ *   文件直接复制，其余照常下载。进度走 `install://progress` 和 `import://item`
+ *   事件，可用 `cancelVanillaInstall` 取消。
  *
  * 前端从不传路径：`token` 是后端保存的扫描结果句柄，且只能用一次。
  */
@@ -78,6 +83,15 @@ export type ImportResult = {
   skipped: ImportSkipped[];
 };
 
+/** 每个版本开始安装前推送的事件。 */
+export const importItemEvent = "import://item";
+
+export type ImportItemProgress = {
+  id: string;
+  index: number;
+  total: number;
+};
+
 const desktopOnly = "需要桌面版才能从现有启动器导入";
 
 /** 打开系统文件夹选择框并扫描选中的目录；取消时返回 `null`。 */
@@ -116,4 +130,16 @@ export function importVersions(
     token,
     ids: [...ids],
   });
+}
+
+/** 订阅导入进度。浏览器预览里没有事件源，返回一个空的取消函数。 */
+export async function listenImportItem(
+  handler: (item: ImportItemProgress) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return () => undefined;
+  }
+  return listen<ImportItemProgress>(importItemEvent, (event) =>
+    handler(event.payload),
+  );
 }

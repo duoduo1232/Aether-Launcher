@@ -217,7 +217,7 @@ export function createWalkController(options: Options): {
   const position = spawn.position.clone();
   let yaw = spawn.yaw;
   let pitch = -0.15;
-  let velocity = new THREE.Vector3();
+  const velocity = new THREE.Vector3();
   let flying = false;
   let sneaking = false;
   let onGround = false;

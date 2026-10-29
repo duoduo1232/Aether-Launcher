@@ -15,19 +15,23 @@
 //! that token plus the identifiers the user ticked. The destination is always
 //! the launcher-owned game tree and instance store.
 //!
-//! What an import actually copies is documented in
-//! `aether_storage::import::execute`: version metadata only, never game files.
-//! The client JAR, libraries and assets are fetched afterwards by the existing
-//! `install_vanilla_client_libraries` command, which already falls back to the
-//! BMCLAPI mirror.
+//! # What an import does
+//!
+//! Importing never reuses the other launcher's folder as a game directory.
+//! `aether_storage::import::execute` plans the selection (read-only), and each
+//! planned version is then installed into the launcher-owned game tree through
+//! the normal install path: the version JSON comes from the official catalog and
+//! every file is checked against the SHA-1 in it. The source folder is only a
+//! **seed** — a file already there whose size and hash match is copied instead
+//! of downloaded; anything else is downloaded as usual. See
+//! `docs/modules/import.md`.
 //!
 //! # Two shapes of source
 //!
 //! PCL2, HMCL and BakaXL keep the game in a `.minecraft` folder and describe a
-//! version with `versions/<id>/<id>.json`, so one pipeline imports all three.
-//! Prism Launcher and MultiMC describe a version with `mmc-pack.json` and store
-//! no version JSON that could be copied, which is why [`PendingSource`] has a
-//! second variant and [`import_versions`] dispatches on it.
+//! version with `versions/<id>/<id>.json`. Prism Launcher and MultiMC describe a
+//! version with `mmc-pack.json`; [`PendingSource`] has a variant for each so a
+//! token can never be replayed against the wrong planner.
 
 use std::collections::HashMap;
 use std::fs;
@@ -35,16 +39,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use aether_core::InstanceId;
+use aether_download::CancellationToken;
+use aether_download::transport::http::UreqKernel;
+use aether_download::transport::{HttpTransport, KernelHttpTransport};
 use aether_storage::import::{bakaxl, hmcl, pcl2, prism};
 use aether_storage::{
-    ExistingFiles, ImportCandidate, ImportError, ImportSourceKind, MAX_IMPORT_VERSIONS,
-    plan_candidates, scan_game_directory,
+    ExistingFiles, ImportCandidate, ImportError, ImportPlan, ImportSkipReason, ImportSourceKind,
+    MAX_IMPORT_VERSIONS, list_instances, plan_candidates, plan_folder_import, plan_prism_import,
+    scan_game_directory, validate_instance_name,
 };
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+use super::catalog::fetch_catalog;
+use super::install::{
+    CANCELLED, EventReporter, InstallOptions, InstallState, Reporter, install_and_create_with,
+};
 use super::instances::InstanceSummary;
+
+/// Event name carrying [`ImportItemEvent`] payloads.
+pub const ITEM_EVENT: &str = "import://item";
 
 /// How many scanned sources stay addressable at once.
 ///
@@ -76,15 +91,10 @@ pub struct ImportState {
 /// The variant decides how [`import_versions`] turns the selection into managed
 /// instances, so a token can never be replayed against the wrong pipeline.
 enum PendingSource {
-    /// 一个 `.minecraft` 形状的游戏目录。导入就是把实例记录指向**它本身**：
-    /// 版本元数据写回它的 `versions/`，游戏文件原地读取，不复制。
+    /// A `.minecraft`-shaped game directory; read-only seed for the install.
     GameDirectory { root: PathBuf },
-    /// Prism/MultiMC 启动器文件夹；实例按 pack 重建，绑定到各自的游戏目录。
-    PrismLauncher {
-        root: PathBuf,
-        /// 这个启动器的游戏目录（`instances/`），实例各有一份 `.minecraft`。
-        game_directory: PathBuf,
-    },
+    /// A Prism/MultiMC launcher folder; instances are read from `instances/`.
+    PrismLauncher { root: PathBuf },
 }
 
 impl ImportState {
@@ -248,14 +258,9 @@ fn build_prism_installation(state: &ImportState, root: &Path) -> LauncherInstall
     let instances = prism::list_instances(root);
     let mut sources = Vec::new();
 
-    // Prism/MultiMC 每个实例自带一个游戏目录（`instances/<id>/.minecraft`），
-    // 加载器、mods、saves 都在里面。启动和扫描都读这个目录，不复制。
-    let game_directory = prism::locate_instances_root(root);
     if !instances.is_empty()
-        && let Some(game_directory) = game_directory
         && let Ok(token) = state.remember(PendingSource::PrismLauncher {
             root: root.to_path_buf(),
-            game_directory,
         })
     {
         sources.push(ImportSourceDto {
@@ -552,10 +557,43 @@ pub(crate) async fn detect_launcher_installations(
         for (root, depth) in launcher_search_roots(&handle) {
             probe(&state, &root, depth, &mut found, &mut budget);
         }
-        found
+        drop_repeated_game_directories(found)
     })
     .await
     .map_err(|error| format!("launcher detection task failed: {error}"))
+}
+
+/// 去掉跨启动器重复的游戏目录。
+///
+/// 同一份 `.minecraft` 常被 PCL2 和 HMCL 同时记录，不去重的话对话框里会列出
+/// 好几行一模一样的路径，用户分不清该点哪个。这里只去掉**指向同一目录**的
+/// 重复条目；`E:\a` 和 `E:\a\.minecraft` 是两个不同的目录，各自可能装不同的
+/// 版本，都要保留。
+///
+/// 判据是规范化后的路径：先 `canonicalize`（解符号链接和 `..`），失败时退回
+/// 小写比较，因为 Windows 路径不区分大小写。同一个目录只保留最先出现的那条，
+/// 顺序不变；一个启动器的来源被全部去掉时，这条安装记录本身也不再列出。
+fn drop_repeated_game_directories(
+    installations: Vec<LauncherInstallationDto>,
+) -> Vec<LauncherInstallationDto> {
+    let mut seen = std::collections::HashSet::new();
+    let mut kept = Vec::with_capacity(installations.len());
+
+    for mut installation in installations {
+        installation.sources.retain(|source| {
+            let key = PathBuf::from(&source.source_path);
+            let key = key
+                .canonicalize()
+                .map(|resolved| resolved.to_string_lossy().to_lowercase())
+                .unwrap_or_else(|_| source.source_path.to_lowercase());
+            seen.insert(key)
+        });
+        if !installation.sources.is_empty() {
+            kept.push(installation);
+        }
+    }
+
+    kept
 }
 
 /// Reads a launcher or game folder the user picked by hand.
@@ -591,15 +629,114 @@ pub(crate) async fn pick_launcher_folder(
     Ok(Some(installation))
 }
 
-/// Copies the selected versions out of a previewed source and creates one
-/// managed instance per version.
+/// Progress marker emitted before each version is installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportItemEvent {
+    pub id: String,
+    pub index: usize,
+    pub total: usize,
+}
+
+/// Installs every planned version into the private game tree.
+///
+/// Sequential on purpose: the downloads inside one version are already
+/// concurrent, and one version at a time keeps the progress events readable and
+/// cancellation prompt. A failure skips that version only.
+fn run_import(
+    transport: &dyn HttpTransport,
+    base: &Path,
+    plan: ImportPlan,
+    cancel: &CancellationToken,
+    reporter: &dyn Reporter,
+    on_item: &dyn Fn(&ImportItemEvent),
+) -> ImportResultDto {
+    let mut imported = Vec::new();
+    let mut skipped: Vec<ImportSkippedDto> = plan
+        .skipped
+        .iter()
+        .map(|(id, reason)| ImportSkippedDto {
+            id: id.clone(),
+            reason: reason.as_str(),
+        })
+        .collect();
+
+    let catalog = fetch_catalog(transport);
+    let total = plan.requests.len();
+    for (index, request) in plan.requests.iter().enumerate() {
+        let skip = |reason: ImportSkipReason| ImportSkippedDto {
+            id: request.id.clone(),
+            reason: reason.as_str(),
+        };
+        if cancel.is_cancelled() {
+            skipped.push(skip(ImportSkipReason::Cancelled));
+            continue;
+        }
+        let Ok(catalog) = &catalog else {
+            skipped.push(skip(ImportSkipReason::InstallFailed));
+            continue;
+        };
+        if !catalog
+            .versions
+            .iter()
+            .any(|item| item.id == request.version)
+        {
+            skipped.push(skip(ImportSkipReason::NotOfficial));
+            continue;
+        }
+        if validate_instance_name(&request.name).is_err() {
+            skipped.push(skip(ImportSkipReason::InvalidName));
+            continue;
+        }
+        let duplicate = list_instances(base).is_ok_and(|listing| {
+            listing
+                .instances
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(&request.name))
+        });
+        if duplicate {
+            skipped.push(skip(ImportSkipReason::DuplicateName));
+            continue;
+        }
+
+        on_item(&ImportItemEvent {
+            id: request.id.clone(),
+            index,
+            total,
+        });
+        let options = InstallOptions {
+            seed: Some(plan.seed.as_path()),
+            catalog: Some(catalog),
+        };
+        match install_and_create_with(
+            transport,
+            base,
+            &request.version,
+            &request.name,
+            options,
+            cancel,
+            reporter,
+        ) {
+            Ok(summary) => imported.push(summary),
+            Err(error) if error == CANCELLED => skipped.push(skip(ImportSkipReason::Cancelled)),
+            Err(_) => skipped.push(skip(ImportSkipReason::InstallFailed)),
+        }
+    }
+
+    ImportResultDto { imported, skipped }
+}
+
+/// Imports the selected versions of a previewed source as managed instances.
 ///
 /// `token` must come from a preview returned by this session; `ids` are the
 /// identifiers the user ticked. Everything else — the source folder, the game
-/// tree and the instance store — is resolved by the backend.
+/// tree and the instance store — is resolved by the backend. Progress arrives as
+/// `import://item` and `install://progress` events, and the run can be cancelled
+/// with `cancel_vanilla_install`.
 #[tauri::command]
 pub(crate) async fn import_versions(
     app: tauri::AppHandle,
+    state: tauri::State<'_, InstallState>,
     token: String,
     ids: Vec<String>,
 ) -> Result<ImportResultDto, String> {
@@ -614,39 +751,28 @@ pub(crate) async fn import_versions(
 
     let base = app_data_root(&app)?;
     let pending = app.state::<ImportState>().take(&token)?;
+    let cancel = state.begin()?;
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let outcome = match &pending {
-            PendingSource::GameDirectory { root } => {
-                // 导入的目标就是这个 `.minecraft` 本身：版本元数据写回它的
-                // `versions/`，实例记录也指向它，一个字节都不复制。
-                aether_storage::import_versions(root, root, &base, &ids)
-            }
-            PendingSource::PrismLauncher {
-                root,
-                game_directory,
-            } => aether_storage::import_prism_instances(root, game_directory, &base, &ids),
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let plan = match &pending {
+            PendingSource::GameDirectory { root } => plan_folder_import(root, &ids),
+            PendingSource::PrismLauncher { root } => plan_prism_import(root, &ids),
         }
         .map_err(|error| format!("cannot import instances: {error}"))?;
 
-        Ok(ImportResultDto {
-            imported: outcome
-                .imported
-                .iter()
-                .map(InstanceSummary::from_instance)
-                .collect(),
-            skipped: outcome
-                .skipped
-                .into_iter()
-                .map(|(id, reason)| ImportSkippedDto {
-                    id,
-                    reason: reason.as_str(),
-                })
-                .collect(),
-        })
+        let transport = KernelHttpTransport::new(UreqKernel::new());
+        let reporter = EventReporter { app: app.clone() };
+        let announce = |event: &ImportItemEvent| {
+            let _ = app.emit(ITEM_EVENT, event);
+        };
+        Ok(run_import(
+            &transport, &base, plan, &cancel, &reporter, &announce,
+        ))
     })
     .await
-    .map_err(|error| format!("import task failed: {error}"))?
+    .map_err(|_| "import task failed".to_owned());
+    state.finish();
+    outcome?
 }
 
 #[cfg(test)]

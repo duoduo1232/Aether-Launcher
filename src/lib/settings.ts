@@ -1,11 +1,13 @@
 import {
   clampMemoryMiB,
+  isMemoryMode,
   defaultMemoryMiB,
   formatMemoryMiB,
   maxMemoryMiB,
   minMemoryMiB,
   parseStoredMemoryMiB,
 } from "./memory";
+import type { MemoryMode } from "./memory";
 
 /**
  * 设置的读写：内存上限与默认 Java 运行时。
@@ -84,6 +86,71 @@ export function loadJavaRuntimeKey(): string | null {
 export function saveJavaRuntimeKey(key: string): void {
   try {
     window.localStorage.setItem("aether.javaRuntime", key);
+  } catch {
+    // 存储不可用时只在本次运行内生效
+  }
+}
+
+const lastPlayedStorageKey = "aether.lastPlayed";
+
+/** 最近一次启动的实例 ID，主页用它决定「继续游戏」显示哪个实例。 */
+export function loadLastPlayedId(): string | null {
+  try {
+    const stored = window.localStorage.getItem(lastPlayedStorageKey);
+    return stored !== null && stored.length > 0 ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastPlayedId(id: string): void {
+  try {
+    window.localStorage.setItem(lastPlayedStorageKey, id);
+  } catch {
+    // 存储不可用时只在本次运行内生效
+  }
+}
+
+const navCollapsedStorageKey = "aether.navCollapsed";
+
+/** 侧边栏是否收起。默认展开。 */
+export function loadNavCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(navCollapsedStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveNavCollapsed(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(navCollapsedStorageKey, collapsed ? "1" : "0");
+  } catch {
+    // 存储不可用时只在本次运行内生效
+  }
+}
+
+export const memoryModeStorageKey = "aether.memoryMode";
+
+/**
+ * 内存模式。默认自动；但如果用户在加入模式之前已经手动存过一个值，
+ * 视为自定义，不要悄悄丢掉他们设过的数字。
+ */
+export function loadMemoryMode(): MemoryMode {
+  try {
+    const stored = window.localStorage.getItem(memoryModeStorageKey);
+    if (isMemoryMode(stored)) {
+      return stored;
+    }
+    return window.localStorage.getItem(memoryStorageKey) !== null ? "custom" : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+export function saveMemoryMode(mode: MemoryMode): void {
+  try {
+    window.localStorage.setItem(memoryModeStorageKey, mode);
   } catch {
     // 存储不可用时只在本次运行内生效
   }

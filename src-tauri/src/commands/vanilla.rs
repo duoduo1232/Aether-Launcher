@@ -13,7 +13,6 @@ use aether_download::transport::HttpTransport;
 use aether_download::{bmclapi_mirror, fetch_first_available, verify_reader};
 use aether_manifest::catalog::VersionCatalog;
 use aether_manifest::parse_version_manifest;
-use tauri::Manager;
 
 use super::catalog::fetch_catalog;
 
@@ -173,40 +172,26 @@ pub(super) fn prepare_version(
     version: &str,
 ) -> Result<String, String> {
     let catalog = fetch_catalog(transport)?;
+    prepare_version_from_catalog(transport, &catalog, game_root, version)
+}
+
+/// Same as [`prepare_version`] for a catalog the caller already holds, so
+/// installing many versions in a row reads the catalog once.
+pub(super) fn prepare_version_from_catalog(
+    transport: &dyn HttpTransport,
+    catalog: &VersionCatalog,
+    game_root: &Path,
+    version: &str,
+) -> Result<String, String> {
     let selected = catalog
         .versions
         .iter()
         .find(|item| item.id == version)
         .ok_or_else(|| "version is absent from the official Mojang catalog".to_owned())?;
     let digest = selected.sha1.clone();
-    let bytes = fetch_verified_metadata(transport, &catalog, version)?;
+    let bytes = fetch_verified_metadata(transport, catalog, version)?;
     cache_verified_metadata(game_root, version, &bytes, &digest)?;
     Ok(version.to_owned())
-}
-
-/// Caches only a verified version JSON under the launcher-owned game directory.
-/// It does not download the client, mark an instance ready, or touch .minecraft.
-#[tauri::command]
-pub async fn cache_vanilla_version_manifest(
-    app: tauri::AppHandle,
-    version: String,
-) -> Result<String, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "application data directory is unavailable".to_owned())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        fs::create_dir_all(&base)
-            .map_err(|_| "cannot prepare application data directory".to_owned())?;
-        let game_root = base.join("game");
-        let transport = aether_download::transport::KernelHttpTransport::new(
-            aether_download::transport::http::UreqKernel::new(),
-        )
-        .with_max_bytes(MAX_VERSION_JSON_BYTES as u64);
-        prepare_version(&transport, &game_root, &version)
-    })
-    .await
-    .map_err(|_| "official version caching task failed".to_owned())?
 }
 
 #[cfg(test)]

@@ -1,165 +1,45 @@
-import {
-  Button,
-  FluentProvider,
-  Text,
-  webDarkTheme,
-  webLightTheme,
-} from "@fluentui/react-components";
-import { List24Regular } from "@fluentui/react-icons";
+import { FluentProvider } from "@fluentui/react-components";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import "./App.css";
-import { AssetPackPicker } from "./components/AssetPackPicker";
-import { EmptyState } from "./components/EmptyState";
-import { ErrorState, ListSkeleton } from "./components/PageState";
-import { MaterialsDialog } from "./components/MaterialsDialog";
-import { SchematicPreview } from "./components/SchematicPreview";
-import { Sidebar } from "./components/Sidebar";
-import {
-  defaultApplicationInfo,
-  getApplicationInfo,
-  isTauri,
-  readSchematic,
-} from "./ipc";
-import type {
-  ApplicationInfo,
-  AssetPack,
-  SchematicDetail,
-  SchematicOrigin,
-} from "./ipc";
-import { loadMaterialPreference, loadPreferredPack } from "./lib/schematicMaterial";
+import { PageTransition } from "./components/PageTransition";
+import { defaultApplicationInfo, getApplicationInfo, isTauri, setWindowTheme } from "./ipc";
+import type { ApplicationInfo } from "./ipc";
+import { aetherDarkTheme, aetherLightTheme } from "./lib/brand";
+import { currentGreeting } from "./lib/greeting";
+import { loadMotionPreference, saveMotionPreference } from "./lib/motion";
+import type { MotionPreference } from "./lib/motion";
+import { detectMica } from "./lib/platform";
+import { loadNavCollapsed, saveNavCollapsed } from "./lib/settings";
+import { useTheme } from "./lib/useTheme";
+import { findPage } from "./navigation";
+import type { PageId } from "./navigation";
 import { AccountsPage } from "./pages/AccountsPage";
+import { DownloadPage } from "./pages/DownloadPage";
 import { HomePage } from "./pages/HomePage";
 import { InstancesPage } from "./pages/InstancesPage";
-import { LibraryPage } from "./pages/LibraryPage";
-import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { SchematicsPage } from "./pages/SchematicsPage";
 import { SettingsPage } from "./pages/SettingsPage";
-
-import { currentGreeting } from "./lib/greeting";
-import { parsePreviewLocation } from "./lib/previewRoute";
-import { useQuery } from "./lib/query";
-import { useTheme } from "./lib/useTheme";
-import { allPages } from "./navigation";
-import type { PageId } from "./navigation";
-
-/**
- * 独立投影预览窗口。
- *
- * `open_schematic_window` 打开的窗口只带一个 `#/schematic-preview?…` 片段，
- * 里面只有实例 ID、相对路径、来源和标题 —— 没有路径，也没有脚本。窗口里
- * 渲染的就是下面这个组件，它按片段再问后端要那一个投影。
- */
-function SchematicPreviewWindow({
-  instanceId,
-  relativePath,
-  origin,
-  originVersion,
-  title,
-}: {
-  instanceId: string;
-  relativePath: string;
-  origin: SchematicOrigin;
-  originVersion: string;
-  title: string;
-}) {
-  const load = useCallback(
-    () => readSchematic(instanceId, relativePath, origin, originVersion),
-    [instanceId, relativePath, origin, originVersion],
-  );
-  const { status, data, error, reload } = useQuery<SchematicDetail>(load, true);
-  // 材质来源存进设置后，进预览就直接套用，不再每次问。
-  // 已设置但加载失败（版本被删了）时退回纯色，不阻塞预览。
-  const [pack, setPack] = useState<AssetPack | null>(null);
-  const [preference, setPreference] = useState<string>(loadMaterialPreference);
-  const [missingBlocks, setMissingBlocks] = useState(0);
-  const [materialsOpen, setMaterialsOpen] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadPreferredPack(preference).then((loaded) => {
-      if (!cancelled) {
-        setPack(loaded);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [preference]);
-
-  return (
-    <div className="preview-window">
-      <div className="preview-window-heading">
-        <Text as="h1" size={500} weight="semibold">
-          {title || data?.metadata.name || "投影预览"}
-        </Text>
-        {data ? (
-          <Button
-            appearance="subtle"
-            icon={<List24Regular />}
-            onClick={() => setMaterialsOpen(true)}
-          >
-            材料清单
-          </Button>
-        ) : null}
-      </div>
-      <AssetPackPicker
-        pack={pack}
-        onLoaded={setPack}
-        onPreferenceChange={setPreference}
-      />
-      {status === "loading" ? (
-        <ListSkeleton />
-      ) : status === "error" ? (
-        <ErrorState
-          title="打不开这个投影"
-          message={error ?? "未知错误"}
-          onRetry={reload}
-        />
-      ) : data ? (
-        <>
-          <SchematicPreview detail={data} pack={pack} onMissingBlocks={setMissingBlocks} />
-          {missingBlocks > 0 ? (
-            <Text className="muted preview-note">
-              有 {missingBlocks} 个方块在当前材质里找不到贴图，换一个更接近投影版本的材质会好些。
-            </Text>
-          ) : null}
-          <MaterialsDialog
-            open={materialsOpen}
-            onOpenChange={setMaterialsOpen}
-            detail={data}
-          />
-        </>
-      ) : (
-        <EmptyState
-          icon={null}
-          title="没有可显示的投影"
-          body="这个文件里没有方块数据。"
-        />
-      )}
-    </div>
-  );
-}
+import { NavPane } from "./shell/NavPane";
+import { TitleBar } from "./shell/TitleBar";
+import { AccountsProvider } from "./state/AccountsProvider";
+import { GameProvider } from "./state/GameProvider";
+import { InstallProvider } from "./state/InstallProvider";
+import { InstancesProvider } from "./state/InstancesProvider";
+import { NavigationContext } from "./state/navigation";
+import type { NavigationApi } from "./state/navigation";
 
 function App() {
-  const [application, setApplication] =
-    useState<ApplicationInfo>(defaultApplicationInfo);
+  const [application, setApplication] = useState<ApplicationInfo>(defaultApplicationInfo);
   const [pageId, setPageId] = useState<PageId>("home");
+  const [collapsed, setCollapsed] = useState(loadNavCollapsed);
+  const [motion, setMotion] = useState<MotionPreference>(loadMotionPreference);
+  const [mica, setMica] = useState(false);
   const [greeting] = useState(currentGreeting);
-  // 首页点「导入实例」时置真，跳到实例页后自动弹出导入对话框。
-  const [openImport, setOpenImport] = useState(false);
   const { preference, resolved, setPreference } = useTheme();
-
-  // 独立预览窗口：整页只有预览，没有侧边栏。
-  const preview = useMemo(
-    () => parsePreviewLocation(window.location.hash),
-    [],
-  );
 
   useEffect(() => {
     if (!isTauri()) {
       return;
     }
-
     let cancelled = false;
     void getApplicationInfo()
       .then((info) => {
@@ -168,66 +48,97 @@ function App() {
         }
       })
       .catch(() => undefined);
-
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const page = allPages.find((candidate) => candidate.id === pageId) ?? allPages[0];
+  // 窗口材质：Windows 11 上透出 Mica，其他系统铺实色
+  useEffect(() => {
+    let cancelled = false;
+    void detectMica().then((supported) => {
+      if (!cancelled) {
+        setMica(supported);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  if (preview) {
-    return (
-      <FluentProvider theme={resolved === "dark" ? webDarkTheme : webLightTheme}>
-        {/* 独立窗口没有侧边栏，不能复用 `.app-shell`（那是 220px + 1fr 的
-            两列网格，会把预览整个挤进侧栏那一列）。 */}
-        <div className="preview-shell" data-theme={resolved}>
-          <SchematicPreviewWindow {...preview} />
-        </div>
-      </FluentProvider>
-    );
-  }
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.material = mica ? "mica" : "solid";
+    root.dataset.motion = motion;
+    root.dataset.theme = resolved;
+  }, [mica, motion, resolved]);
+
+  // 让 Mica 的明暗跟随界面，而不是系统
+  useEffect(() => {
+    void setWindowTheme(resolved).catch(() => undefined);
+  }, [resolved]);
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((previous) => {
+      saveNavCollapsed(!previous);
+      return !previous;
+    });
+  }, []);
+
+  const changeMotion = useCallback((next: MotionPreference) => {
+    setMotion(next);
+    saveMotionPreference(next);
+  }, []);
+
+  const navigation = useMemo<NavigationApi>(
+    () => ({ current: pageId, navigate: setPageId }),
+    [pageId],
+  );
+
+  const page = findPage(pageId);
 
   return (
-    <FluentProvider theme={resolved === "dark" ? webDarkTheme : webLightTheme}>
-      <div className="app-shell" data-theme={resolved}>
-        <Sidebar
-          application={application}
-          current={pageId}
-          onNavigate={setPageId}
-        />
-        <main className="workspace">
-          {page.id === "home" ? (
-            <HomePage
-              application={application}
-              greeting={greeting}
-              summary={page.summary}
-              onImport={() => {
-                setOpenImport(true);
-                setPageId("instances");
-              }}
-              onOpenInstances={() => setPageId("instances")}
-            />
-          ) : page.id === "settings" ? (
-            <SettingsPage
-              page={page}
-              themePreference={preference}
-              onThemeChange={setPreference}
-            />
-          ) : page.id === "instances" ? (
-            <InstancesPage page={page} openImport={openImport} />
-
-          ) : page.id === "library" ? (
-            <LibraryPage page={page} />
-          ) : page.id === "schematics" ? (
-            <SchematicsPage page={page} />
-          ) : page.id === "accounts" ? (
-            <AccountsPage page={page} />
-          ) : (
-            <PlaceholderPage page={page} />
-          )}
-        </main>
-      </div>
+    <FluentProvider theme={resolved === "dark" ? aetherDarkTheme : aetherLightTheme} className="app-root">
+      <NavigationContext.Provider value={navigation}>
+        <AccountsProvider>
+          <InstancesProvider>
+            <InstallProvider>
+              <GameProvider>
+                <div className="app-shell">
+                  <TitleBar />
+                  <div className="app-body">
+                    <NavPane collapsed={collapsed} onToggle={toggleCollapsed} version={application.version} />
+                    <main className="content-layer">
+                      <PageTransition pageKey={pageId}>
+                        {page.id === "home" ? (
+                          <HomePage greeting={greeting} summary={page.summary} />
+                        ) : page.id === "instances" ? (
+                          <InstancesPage page={page} />
+                        ) : page.id === "download" ? (
+                          <DownloadPage page={page} />
+                        ) : page.id === "schematics" ? (
+                          <SchematicsPage page={page} />
+                        ) : page.id === "accounts" ? (
+                          <AccountsPage page={page} />
+                        ) : (
+                          <SettingsPage
+                            page={page}
+                            themePreference={preference}
+                            onThemeChange={setPreference}
+                            motion={motion}
+                            onMotionChange={changeMotion}
+                            version={application.version}
+                          />
+                        )}
+                      </PageTransition>
+                    </main>
+                  </div>
+                </div>
+              </GameProvider>
+            </InstallProvider>
+          </InstancesProvider>
+        </AccountsProvider>
+      </NavigationContext.Provider>
     </FluentProvider>
   );
 }
